@@ -16,7 +16,13 @@ import {
   AlertTriangle,
   Copy,
   Check,
-  Activity
+  Activity,
+  Table,
+  Eye,
+  Eraser,
+  ChevronRight,
+  ChevronDown,
+  X
 } from 'lucide-react';
 
 interface Overview {
@@ -219,6 +225,11 @@ function DatabasesTab() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [clearConfirm, setClearConfirm] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [expandedDb, setExpandedDb] = useState<string | null>(null);
+  const [tables, setTables] = useState<string[]>([]);
+  const [tablesLoading, setTablesLoading] = useState(false);
+  const [tablePreview, setTablePreview] = useState<{ table: string; data: QueryResult } | null>(null);
+  const [truncateConfirm, setTruncateConfirm] = useState<{ database: string; table: string } | null>(null);
 
   const fetchDatabases = useCallback(async () => {
     if (!activeProject) return;
@@ -244,9 +255,43 @@ function DatabasesTab() {
     }
   }, [activeProject, authHeaders]);
 
+  const fetchTables = useCallback(async (database: string) => {
+    if (!activeProject) return;
+    setTablesLoading(true);
+    setTables([]);
+
+    try {
+      const res = await fetch(`/api/projects/${activeProject.id}/db/tables?database=${encodeURIComponent(database)}`, {
+        headers: authHeaders(),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to fetch tables');
+      }
+
+      const data = await res.json();
+      setTables(data.tables);
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setTablesLoading(false);
+    }
+  }, [activeProject, authHeaders]);
+
   useEffect(() => {
     fetchDatabases();
   }, [fetchDatabases]);
+
+  const toggleDatabase = async (db: string) => {
+    if (expandedDb === db) {
+      setExpandedDb(null);
+      setTables([]);
+    } else {
+      setExpandedDb(db);
+      await fetchTables(db);
+    }
+  };
 
   const handleCreate = async (name: string) => {
     if (!activeProject) return;
@@ -296,6 +341,10 @@ function DatabasesTab() {
       }
 
       setDeleteConfirm(null);
+      if (expandedDb === name) {
+        setExpandedDb(null);
+        setTables([]);
+      }
       fetchDatabases();
     } catch (err) {
       alert((err as Error).message);
@@ -324,7 +373,61 @@ function DatabasesTab() {
       }
 
       setClearConfirm(null);
-      fetchDatabases();
+      if (expandedDb === name) {
+        await fetchTables(name);
+      }
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handlePreviewTable = async (database: string, table: string) => {
+    if (!activeProject) return;
+
+    try {
+      const res = await fetch(
+        `/api/projects/${activeProject.id}/db/tables/${encodeURIComponent(table)}/preview?database=${encodeURIComponent(database)}&limit=3`,
+        { headers: authHeaders() }
+      );
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to fetch table preview');
+      }
+
+      const data = await res.json();
+      setTablePreview({ table, data: data.result });
+    } catch (err) {
+      alert((err as Error).message);
+    }
+  };
+
+  const handleTruncateTable = async (database: string, table: string) => {
+    if (!activeProject) return;
+    setActionLoading(true);
+
+    try {
+      const res = await fetch(
+        `/api/projects/${activeProject.id}/db/tables/${encodeURIComponent(table)}/truncate`,
+        {
+          method: 'POST',
+          headers: {
+            ...authHeaders(),
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ database, confirmName: table }),
+        }
+      );
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to truncate table');
+      }
+
+      setTruncateConfirm(null);
+      alert(`Table "${table}" has been cleared.`);
     } catch (err) {
       alert((err as Error).message);
     } finally {
@@ -379,27 +482,88 @@ function DatabasesTab() {
           </thead>
           <tbody className="divide-y divide-[var(--border)]">
             {databases.map((db) => (
-              <tr key={db} className="hover:bg-[var(--background)]">
-                <td className="px-4 py-3 font-mono">{db}</td>
-                <td className="px-4 py-3 text-right">
-                  <div className="flex justify-end gap-2">
+              <>
+                <tr key={db} className="hover:bg-[var(--background)]">
+                  <td className="px-4 py-3">
                     <button
-                      onClick={() => setClearConfirm(db)}
-                      className="btn btn-secondary text-sm py-1 px-3"
-                      title="Clear all data"
+                      onClick={() => toggleDatabase(db)}
+                      className="flex items-center gap-2 font-mono hover:text-[var(--primary)] transition-colors"
                     >
-                      Clear
+                      {expandedDb === db ? (
+                        <ChevronDown className="w-4 h-4" />
+                      ) : (
+                        <ChevronRight className="w-4 h-4" />
+                      )}
+                      <Database className="w-4 h-4" />
+                      {db}
                     </button>
-                    <button
-                      onClick={() => setDeleteConfirm(db)}
-                      className="btn btn-danger text-sm py-1 px-3"
-                      title="Drop database"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex justify-end gap-2">
+                      <button
+                        onClick={() => setClearConfirm(db)}
+                        className="btn btn-secondary text-sm py-1 px-3"
+                        title="Clear all data"
+                      >
+                        Clear
+                      </button>
+                      <button
+                        onClick={() => setDeleteConfirm(db)}
+                        className="btn btn-danger text-sm py-1 px-3"
+                        title="Drop database"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                {expandedDb === db && (
+                  <tr key={`${db}-tables`}>
+                    <td colSpan={2} className="px-4 py-3 bg-[var(--background)]">
+                      {tablesLoading ? (
+                        <div className="text-center py-4 text-[var(--muted)]">Loading tables...</div>
+                      ) : tables.length === 0 ? (
+                        <div className="text-center py-4 text-[var(--muted)]">No tables found</div>
+                      ) : (
+                        <div className="pl-8">
+                          <p className="text-sm text-[var(--muted)] mb-2">{tables.length} tables found</p>
+                          <div className="space-y-1">
+                            {tables.map((table) => (
+                              <div
+                                key={table}
+                                className="flex items-center justify-between py-2 px-3 rounded hover:bg-[var(--card)] transition-colors"
+                              >
+                                <span className="flex items-center gap-2 font-mono text-sm">
+                                  <Table className="w-3 h-3 text-[var(--muted)]" />
+                                  {table}
+                                </span>
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={() => handlePreviewTable(db, table)}
+                                    className="btn btn-secondary text-xs py-1 px-2 flex items-center gap-1"
+                                    title="Preview first 3 rows"
+                                  >
+                                    <Eye className="w-3 h-3" />
+                                    Preview
+                                  </button>
+                                  <button
+                                    onClick={() => setTruncateConfirm({ database: db, table })}
+                                    className="btn btn-danger text-xs py-1 px-2 flex items-center gap-1"
+                                    title="Clear table data"
+                                  >
+                                    <Eraser className="w-3 h-3" />
+                                    Clear
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )}
+              </>
             ))}
           </tbody>
         </table>
@@ -434,6 +598,26 @@ function DatabasesTab() {
           onCancel={() => setClearConfirm(null)}
           loading={actionLoading}
           danger
+        />
+      )}
+
+      {truncateConfirm && (
+        <ConfirmModal
+          title="Clear Table"
+          message={`Are you sure you want to clear all data in table "${truncateConfirm.table}"?`}
+          confirmText={truncateConfirm.table}
+          onConfirm={() => handleTruncateTable(truncateConfirm.database, truncateConfirm.table)}
+          onCancel={() => setTruncateConfirm(null)}
+          loading={actionLoading}
+          danger
+        />
+      )}
+
+      {tablePreview && (
+        <TablePreviewModal
+          table={tablePreview.table}
+          data={tablePreview.data}
+          onClose={() => setTablePreview(null)}
         />
       )}
     </div>
@@ -542,6 +726,73 @@ function ConfirmModal({
             >
               {loading ? 'Processing...' : 'Confirm'}
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TablePreviewModal({
+  table,
+  data,
+  onClose,
+}: {
+  table: string;
+  data: QueryResult;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="card w-full max-w-4xl mx-4 max-h-[80vh] overflow-hidden flex flex-col">
+        <div className="p-4 border-b border-[var(--border)] flex justify-between items-center">
+          <h2 className="text-xl font-bold flex items-center gap-2">
+            <Table className="w-5 h-5" />
+            Preview: {table}
+          </h2>
+          <button onClick={onClose} className="btn btn-secondary p-2">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-4 overflow-auto flex-1">
+          {data.rows.length === 0 ? (
+            <div className="text-center py-8 text-[var(--muted)]">
+              <p>No data in this table</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--border)]">
+                    {data.fields.map((field) => (
+                      <th key={field} className="px-3 py-2 text-left font-medium text-[var(--muted)]">
+                        {field}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.rows.map((row, idx) => (
+                    <tr key={idx} className="border-b border-[var(--border)] hover:bg-[var(--background)]">
+                      {data.fields.map((field) => (
+                        <td key={field} className="px-3 py-2 font-mono text-xs">
+                          {row[field] === null ? (
+                            <span className="text-[var(--muted)] italic">NULL</span>
+                          ) : typeof row[field] === 'object' ? (
+                            JSON.stringify(row[field])
+                          ) : (
+                            String(row[field])
+                          )}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="mt-4 text-xs text-[var(--muted)]">
+            Showing {data.rows.length} row(s) • Query took {data.executionTimeMs}ms
           </div>
         </div>
       </div>

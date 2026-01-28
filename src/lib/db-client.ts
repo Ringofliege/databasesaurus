@@ -19,6 +19,8 @@ export interface DbClient {
   
   // Table operations
   listTables(database: string): Promise<string[]>;
+  getTablePreview(database: string, table: string, limit?: number): Promise<QueryResult>;
+  truncateTable(database: string, table: string): Promise<void>;
   
   // User operations
   createUser(username: string, password: string): Promise<void>;
@@ -200,6 +202,47 @@ export class MySqlClient implements DbClient {
     }
   }
   
+  async getTablePreview(database: string, table: string, limit = 3): Promise<QueryResult> {
+    if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error('Invalid table name.');
+    }
+    const conn = await this.pool!.getConnection();
+    const startTime = Date.now();
+    try {
+      await conn.query(`USE \`${database}\``);
+      const [rows] = await conn.query<mysql.RowDataPacket[]>(`SELECT * FROM \`${table}\` LIMIT ?`, [limit]);
+      const executionTimeMs = Date.now() - startTime;
+      const resultRows = rows as Record<string, unknown>[];
+      const fields = resultRows.length > 0 ? Object.keys(resultRows[0]) : [];
+      return {
+        rows: resultRows,
+        rowCount: resultRows.length,
+        fields,
+        executionTimeMs,
+        truncated: false,
+      };
+    } finally {
+      conn.release();
+    }
+  }
+  
+  async truncateTable(database: string, table: string): Promise<void> {
+    if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error('Invalid table name.');
+    }
+    const conn = await this.pool!.getConnection();
+    try {
+      await conn.query(`USE \`${database}\``);
+      await conn.query('SET FOREIGN_KEY_CHECKS = 0');
+      await conn.query(`TRUNCATE TABLE \`${table}\``);
+      await conn.query('SET FOREIGN_KEY_CHECKS = 1');
+    } finally {
+      conn.release();
+    }
+  }
+  
   async createUser(username: string, password: string): Promise<void> {
     if (!this.pool) await this.connect();
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
@@ -285,17 +328,25 @@ export class PostgresClient implements DbClient {
     this.config = config;
   }
   
-  async connect(): Promise<void> {
-    this.pool = new Pool({
+  /**
+   * Get base connection config for creating pools.
+   * Password must be a string (not undefined/null) for SCRAM auth.
+   */
+  private getPoolConfig(database?: string) {
+    return {
       host: this.config.host,
       port: this.config.port,
       user: this.config.username,
-      password: this.config.password || undefined,
-      database: this.config.database || 'postgres',
+      password: this.config.password ?? '', // Must be string for SCRAM auth
+      database: database || this.config.database || 'postgres',
       max: 5,
       connectionTimeoutMillis: QUERY_TIMEOUT_MS,
       idleTimeoutMillis: 30000,
-    });
+    };
+  }
+  
+  async connect(): Promise<void> {
+    this.pool = new Pool(this.getPoolConfig());
   }
   
   async disconnect(): Promise<void> {
@@ -372,10 +423,7 @@ export class PostgresClient implements DbClient {
       throw new Error('Invalid database name. Use only alphanumeric characters and underscores.');
     }
     // Need to connect to postgres db for create operations
-    const maintenancePool = new Pool({
-      ...this.pool!.options,
-      database: 'postgres',
-    });
+    const maintenancePool = new Pool(this.getPoolConfig('postgres'));
     try {
       await maintenancePool.query(`CREATE DATABASE "${name}"`);
     } finally {
@@ -389,10 +437,7 @@ export class PostgresClient implements DbClient {
       throw new Error('Invalid database name.');
     }
     // Need to connect to postgres db for drop operations
-    const maintenancePool = new Pool({
-      ...this.pool!.options,
-      database: 'postgres',
-    });
+    const maintenancePool = new Pool(this.getPoolConfig('postgres'));
     try {
       // Terminate existing connections
       await maintenancePool.query(
@@ -421,10 +466,7 @@ export class PostgresClient implements DbClient {
     }
     
     // Connect to the target database to truncate tables
-    const targetPool = new Pool({
-      ...this.pool!.options,
-      database: name,
-    });
+    const targetPool = new Pool(this.getPoolConfig(name));
     
     try {
       // Get all tables in public schema
@@ -450,10 +492,7 @@ export class PostgresClient implements DbClient {
   async listTables(database: string): Promise<string[]> {
     if (!this.pool) await this.connect();
     
-    const targetPool = new Pool({
-      ...this.pool!.options,
-      database,
-    });
+    const targetPool = new Pool(this.getPoolConfig(database));
     
     try {
       const result = await targetPool.query(
@@ -465,12 +504,58 @@ export class PostgresClient implements DbClient {
     }
   }
   
+  async getTablePreview(database: string, table: string, limit = 3): Promise<QueryResult> {
+    if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error('Invalid table name.');
+    }
+    
+    const targetPool = new Pool(this.getPoolConfig(database));
+    const startTime = Date.now();
+    
+    try {
+      const result = await targetPool.query(`SELECT * FROM "${table}" LIMIT $1`, [limit]);
+      const executionTimeMs = Date.now() - startTime;
+      const fields = result.fields?.map(f => f.name) || 
+                    (result.rows.length > 0 ? Object.keys(result.rows[0]) : []);
+      return {
+        rows: result.rows,
+        rowCount: result.rows.length,
+        fields,
+        executionTimeMs,
+        truncated: false,
+      };
+    } finally {
+      await targetPool.end();
+    }
+  }
+  
+  async truncateTable(database: string, table: string): Promise<void> {
+    if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error('Invalid table name.');
+    }
+    
+    const targetPool = new Pool(this.getPoolConfig(database));
+    
+    try {
+      await targetPool.query('SET session_replication_role = replica');
+      await targetPool.query(`TRUNCATE TABLE "${table}" CASCADE`);
+      await targetPool.query('SET session_replication_role = DEFAULT');
+    } finally {
+      await targetPool.end();
+    }
+  }
+  
   async createUser(username: string, password: string): Promise<void> {
     if (!this.pool) await this.connect();
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
       throw new Error('Invalid username. Use only alphanumeric characters and underscores.');
     }
-    await this.pool!.query(`CREATE USER "${username}" WITH PASSWORD $1`, [password]);
+    // PostgreSQL CREATE USER doesn't support $1 for PASSWORD - use proper escaping
+    // The password is escaped by replacing single quotes with two single quotes
+    const escapedPassword = password.replace(/'/g, "''");
+    await this.pool!.query(`CREATE USER "${username}" WITH PASSWORD '${escapedPassword}'`);
   }
   
   async rotatePassword(username: string, newPassword: string): Promise<void> {
@@ -478,7 +563,9 @@ export class PostgresClient implements DbClient {
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
       throw new Error('Invalid username.');
     }
-    await this.pool!.query(`ALTER USER "${username}" WITH PASSWORD $1`, [newPassword]);
+    // PostgreSQL ALTER USER doesn't support $1 for PASSWORD - use proper escaping
+    const escapedPassword = newPassword.replace(/'/g, "''");
+    await this.pool!.query(`ALTER USER "${username}" WITH PASSWORD '${escapedPassword}'`);
   }
   
   previewGrantSql(database: string, username: string): string[] {
@@ -501,10 +588,7 @@ export class PostgresClient implements DbClient {
     const statements = this.previewGrantSql(database, username);
     
     // First statement needs to run on maintenance DB
-    const maintenancePool = new Pool({
-      ...this.pool!.options,
-      database: 'postgres',
-    });
+    const maintenancePool = new Pool(this.getPoolConfig('postgres'));
     
     try {
       await maintenancePool.query(statements[0]);
@@ -513,10 +597,7 @@ export class PostgresClient implements DbClient {
     }
     
     // Rest need to run on target DB
-    const targetPool = new Pool({
-      ...this.pool!.options,
-      database,
-    });
+    const targetPool = new Pool(this.getPoolConfig(database));
     
     try {
       for (let i = 1; i < statements.length; i++) {
@@ -535,7 +616,7 @@ export class PostgresClient implements DbClient {
     const startTime = Date.now();
     
     const targetPool = database
-      ? new Pool({ ...this.pool!.options, database })
+      ? new Pool(this.getPoolConfig(database))
       : this.pool!;
     
     try {
