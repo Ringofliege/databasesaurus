@@ -204,6 +204,9 @@ export class MySqlClient implements DbClient {
   
   async getTablePreview(database: string, table: string, limit = 3): Promise<QueryResult> {
     if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
     if (!/^[a-zA-Z0-9_]+$/.test(table)) {
       throw new Error('Invalid table name.');
     }
@@ -229,6 +232,9 @@ export class MySqlClient implements DbClient {
   
   async truncateTable(database: string, table: string): Promise<void> {
     if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
     if (!/^[a-zA-Z0-9_]+$/.test(table)) {
       throw new Error('Invalid table name.');
     }
@@ -491,6 +497,9 @@ export class PostgresClient implements DbClient {
   
   async listTables(database: string): Promise<string[]> {
     if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
     
     const targetPool = new Pool(this.getPoolConfig(database));
     
@@ -506,6 +515,9 @@ export class PostgresClient implements DbClient {
   
   async getTablePreview(database: string, table: string, limit = 3): Promise<QueryResult> {
     if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
     if (!/^[a-zA-Z0-9_]+$/.test(table)) {
       throw new Error('Invalid table name.');
     }
@@ -532,6 +544,9 @@ export class PostgresClient implements DbClient {
   
   async truncateTable(database: string, table: string): Promise<void> {
     if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
     if (!/^[a-zA-Z0-9_]+$/.test(table)) {
       throw new Error('Invalid table name.');
     }
@@ -552,10 +567,13 @@ export class PostgresClient implements DbClient {
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
       throw new Error('Invalid username. Use only alphanumeric characters and underscores.');
     }
-    // PostgreSQL CREATE USER doesn't support $1 for PASSWORD - use proper escaping
-    // The password is escaped by replacing single quotes with two single quotes
-    const escapedPassword = password.replace(/'/g, "''");
-    await this.pool!.query(`CREATE USER "${username}" WITH PASSWORD '${escapedPassword}'`);
+    // PostgreSQL CREATE USER doesn't support parameterized queries for PASSWORD
+    // Use format() function which properly handles escaping via %L for literals
+    await this.pool!.query(`SELECT format('CREATE USER %I WITH PASSWORD %L', $1, $2)`, [username, password])
+      .then(async (res) => {
+        const sql = res.rows[0].format;
+        await this.pool!.query(sql);
+      });
   }
   
   async rotatePassword(username: string, newPassword: string): Promise<void> {
@@ -563,9 +581,13 @@ export class PostgresClient implements DbClient {
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
       throw new Error('Invalid username.');
     }
-    // PostgreSQL ALTER USER doesn't support $1 for PASSWORD - use proper escaping
-    const escapedPassword = newPassword.replace(/'/g, "''");
-    await this.pool!.query(`ALTER USER "${username}" WITH PASSWORD '${escapedPassword}'`);
+    // PostgreSQL ALTER USER doesn't support parameterized queries for PASSWORD
+    // Use format() function which properly handles escaping via %L for literals
+    await this.pool!.query(`SELECT format('ALTER USER %I WITH PASSWORD %L', $1, $2)`, [username, newPassword])
+      .then(async (res) => {
+        const sql = res.rows[0].format;
+        await this.pool!.query(sql);
+      });
   }
   
   previewGrantSql(database: string, username: string): string[] {

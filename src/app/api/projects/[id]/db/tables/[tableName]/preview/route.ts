@@ -31,10 +31,26 @@ export async function GET(
     );
   }
 
+  // Validate database name
+  if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+    return NextResponse.json(
+      { error: 'Invalid database name. Use only alphanumeric characters and underscores.' },
+      { status: 400 }
+    );
+  }
+
   // Validate table name
   if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
     return NextResponse.json(
       { error: 'Invalid table name. Use only alphanumeric characters and underscores.' },
+      { status: 400 }
+    );
+  }
+
+  // Validate limit parameter
+  if (isNaN(limit) || limit < 1 || limit > 100) {
+    return NextResponse.json(
+      { error: 'Invalid limit parameter. Must be between 1 and 100.' },
       { status: 400 }
     );
   }

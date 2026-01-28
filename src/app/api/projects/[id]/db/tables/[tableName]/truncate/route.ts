@@ -6,7 +6,7 @@ import { getActiveSession, noSessionResponse } from '@/lib/session-middleware';
 import { createDbClient } from '@/lib/db-client';
 
 const truncateSchema = z.object({
-  database: z.string().min(1),
+  database: z.string().min(1).regex(/^[a-zA-Z0-9_]+$/, 'Use only alphanumeric characters and underscores'),
   confirmName: z.string().min(1),
 });
 
@@ -40,9 +40,12 @@ export async function POST(
     return noSessionResponse();
   }
 
+  let database: string | undefined;
+  
   try {
     const body = await request.json();
     const data = truncateSchema.parse(body);
+    database = data.database;
 
     // Verify confirmation matches table name
     if (data.confirmName !== tableName) {
@@ -76,8 +79,9 @@ export async function POST(
       );
     }
     
-    // Log failed audit
+    // Log failed audit - include database if available
     await logAudit(id, auth.actor, 'table.truncate', false, { 
+      database: database ?? 'unknown',
       table: tableName,
       error: (error as Error).message 
     });

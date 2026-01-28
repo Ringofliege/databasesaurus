@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useApp } from '@/lib/app-context';
 import { useRouter } from 'next/navigation';
 import {
@@ -482,8 +482,8 @@ function DatabasesTab() {
           </thead>
           <tbody className="divide-y divide-[var(--border)]">
             {databases.map((db) => (
-              <>
-                <tr key={db} className="hover:bg-[var(--background)]">
+              <React.Fragment key={db}>
+                <tr className="hover:bg-[var(--background)]">
                   <td className="px-4 py-3">
                     <button
                       onClick={() => toggleDatabase(db)}
@@ -563,7 +563,7 @@ function DatabasesTab() {
                     </td>
                   </tr>
                 )}
-              </>
+              </React.Fragment>
             ))}
           </tbody>
         </table>
