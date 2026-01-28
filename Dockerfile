@@ -42,11 +42,9 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Create non-root user
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-# Create data directories
 RUN mkdir -p /data/workspaces && chown -R nextjs:nodejs /data
 
 # Copy built application
@@ -54,23 +52,23 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Copy Prisma files for migrations
+# Copy prisma schema/migrations (if needed at runtime)
 COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 
-# Set user
+# Install production deps in runner (pnpm)
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --prod --frozen-lockfile
+
+# Generate prisma client in the runtime image (recommended)
+RUN pnpm prisma generate
+
 USER nextjs
-
-# Expose port
 EXPOSE 3000
-
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/projects || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/projects || exit 1
 
-# Start the application
 CMD ["node", "server.js"]
+
