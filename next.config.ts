@@ -6,10 +6,6 @@ const nextConfig: NextConfig = {
     // Ignore type errors during build for faster iteration
     ignoreBuildErrors: true,
   },
-  // Enable instrumentation for startup logging
-  experimental: {
-    instrumentationHook: true,
-  },
 };
 
 export default nextConfig;

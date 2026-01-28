@@ -3,10 +3,10 @@ import { NextRequest, NextResponse } from 'next/server';
 // Track first request
 let firstRequest = true;
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   // Log first request to confirm server is receiving traffic
   if (firstRequest) {
-    console.log('[Middleware] First request received:', {
+    console.log('[Proxy] First request received:', {
       url: request.url,
       method: request.method,
       headers: {
@@ -22,7 +22,7 @@ export function middleware(request: NextRequest) {
   return NextResponse.next();
 }
 
-// Configure which routes to run middleware on
+// Configure which routes to run proxy on
 export const config = {
   matcher: [
     /*
