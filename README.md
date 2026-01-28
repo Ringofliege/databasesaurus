@@ -124,6 +124,55 @@ docker compose up -d
 docker compose --profile redis up -d
 ```
 
+### Custom Port Configuration
+
+The Docker image defaults to port 3000, but you can override it using the `PORT` environment variable:
+
+```bash
+# Example with custom port 3010
+docker run -p 3010:3010 \
+  -e PORT=3010 \
+  -e HOSTNAME="0.0.0.0" \
+  -e DATABASE_URL="postgresql://..." \
+  -e BASIC_AUTH_USER=admin \
+  -e BASIC_AUTH_PASS=changeme \
+  db-prisma-helper
+```
+
+**Docker Compose with custom port:**
+
+```yaml
+version: "3.8"
+services:
+  app:
+    image: ghcr.io/ringofliege/databasesaurus:latest
+    environment:
+      HOSTNAME: "0.0.0.0"
+      PORT: "3010"  # Custom port
+      DATABASE_URL: ${DATABASE_URL}
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-admin}
+      BASIC_AUTH_PASS: ${BASIC_AUTH_PASS:-changeme}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+    ports:
+      - "3010:3010"  # Map to custom port
+    volumes:
+      - workspaces:/data/workspaces
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  workspaces:
+  redis_data:
+```
+
 ### Build Docker image manually
 
 ```bash
@@ -134,6 +183,46 @@ docker run -p 3000:3000 \
   -e BASIC_AUTH_PASS=changeme \
   db-prisma-helper
 ```
+
+### Troubleshooting Docker Deployment
+
+**"No server is reachable" or "404 not found" errors:**
+
+1. **Check logs for port information**: The startup script now logs the actual port being used
+   ```bash
+   docker logs <container-name>
+   ```
+   Look for lines like:
+   ```
+   PORT: 3010
+   Starting Next.js server on 0.0.0.0:3010...
+   ```
+
+2. **Verify port mapping**: Ensure the exposed port matches the PORT environment variable
+   ```bash
+   docker ps  # Check port mappings
+   ```
+
+3. **Test from within the container**:
+   ```bash
+   docker exec <container-name> wget -O- http://localhost:3010/api/projects
+   ```
+
+4. **Check environment variables**:
+   ```bash
+   docker exec <container-name> env | grep -E "PORT|HOSTNAME|DATABASE_URL"
+   ```
+
+5. **Healthcheck status**:
+   ```bash
+   docker inspect <container-name> | grep -A 10 Health
+   ```
+   The healthcheck automatically uses the PORT environment variable.
+
+**Common issues:**
+- Port mismatch: Container PORT env doesn't match exposed port in docker-compose
+- Database connectivity: DATABASE_URL is not reachable from container
+- Missing credentials: BASIC_AUTH_USER or BASIC_AUTH_PASS not set
 
 ## API Reference
 
