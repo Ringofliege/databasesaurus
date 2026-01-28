@@ -62,13 +62,18 @@ RUN pnpm install --prod --frozen-lockfile
 # Generate prisma client in the runtime image (recommended)
 RUN pnpm prisma generate
 
+# Copy startup script
+COPY start.sh ./
+RUN chmod +x start.sh
+
 USER nextjs
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/projects || exit 1
+# Use PORT environment variable in healthcheck - fallback to 3000 if not set
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT:-3000}/api/projects || exit 1
 
-CMD ["node", "server.js"]
+CMD ["./start.sh"]
 
