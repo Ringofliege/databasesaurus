@@ -1,0 +1,102 @@
+// Prisma schema for Meta-DB (Postgres)
+// This database stores metadata, audit events, and run information
+// It does NOT store target DB credentials
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Last known DB info (from most recent session)
+  lastDbKind String? @map("last_db_kind")
+  lastDbHost String? @map("last_db_host")
+  lastDbPort Int?    @map("last_db_port")
+  lastDbName String? @map("last_db_name")
+
+  // GitLab / Prisma config
+  gitlabRepoPath   String? @map("gitlab_repo_path")
+  defaultBranch    String? @map("default_branch")
+  workingDirectory String? @map("working_directory")
+  pnpmFilter       String? @map("pnpm_filter")
+
+  // Relations
+  dbObjects   ProjectDbObject[]
+  auditEvents AuditEvent[]
+  runs        Run[]
+
+  @@map("projects")
+}
+
+enum DbObjectType {
+  database
+  user
+}
+
+model ProjectDbObject {
+  id         String       @id @default(uuid())
+  projectId  String       @map("project_id")
+  objectType DbObjectType @map("object_type")
+  name       String
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, objectType, name])
+  @@map("project_db_objects")
+}
+
+model AuditEvent {
+  id          String   @id @default(uuid())
+  projectId   String   @map("project_id")
+  actor       String
+  action      String
+  success     Boolean
+  durationMs  Int?     @map("duration_ms")
+  payloadJson Json?    @map("payload_json")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@map("audit_events")
+}
+
+model Run {
+  id         String    @id @default(uuid())
+  projectId  String    @map("project_id")
+  kind       String
+  status     String    @default("queued")
+  exitCode   Int?      @map("exit_code")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+
+  project Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  logs    RunLog[]
+
+  @@index([projectId, createdAt])
+  @@map("runs")
+}
+
+model RunLog {
+  id    String   @id @default(uuid())
+  runId String   @map("run_id")
+  ts    DateTime @default(now())
+  line  String
+
+  run Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, ts])
+  @@map("run_logs")
+}
