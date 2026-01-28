@@ -1,6 +1,6 @@
 import mysql from 'mysql2/promise';
 import { Pool, PoolClient } from 'pg';
-import { ParsedDbUrl, buildDbUrl } from './db-url';
+import { ParsedDbUrl } from './db-url';
 
 export interface DbClient {
   // Connection

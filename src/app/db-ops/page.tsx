@@ -41,7 +41,7 @@ interface QueryResult {
 type Tab = 'overview' | 'databases' | 'users' | 'console';
 
 export default function DbOpsPage() {
-  const { activeProject, sessionStatus, authHeaders } = useApp();
+  const { activeProject, sessionStatus } = useApp();
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>('overview');
 
