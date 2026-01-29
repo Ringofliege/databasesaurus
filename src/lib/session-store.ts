@@ -112,8 +112,8 @@ export class InMemorySessionStore implements SessionStore {
 export class RedisSessionStore implements SessionStore {
   private redis: Redis;
   private prefix = 'dbhelper:session:';
-  private isConnected = false;
   private connectionError: Error | null = null;
+  private static readonly CONNECTION_TIMEOUT_MS = 5000;
 
   constructor(redisUrl: string) {
     this.redis = new Redis(redisUrl, {
@@ -129,7 +129,6 @@ export class RedisSessionStore implements SessionStore {
     });
 
     this.redis.on('connect', () => {
-      this.isConnected = true;
       this.connectionError = null;
       console.log('Redis session store connected');
     });
@@ -140,7 +139,7 @@ export class RedisSessionStore implements SessionStore {
     });
 
     this.redis.on('close', () => {
-      this.isConnected = false;
+      // Connection closed
     });
   }
 
@@ -154,7 +153,7 @@ export class RedisSessionStore implements SessionStore {
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
           reject(new Error('Redis connection timeout'));
-        }, 5000);
+        }, RedisSessionStore.CONNECTION_TIMEOUT_MS);
 
         this.redis.once('ready', () => {
           clearTimeout(timeout);

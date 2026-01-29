@@ -27,13 +27,25 @@ export async function GET(
   const limitStr = searchParams.get('limit');
   const offsetStr = searchParams.get('offset');
   const orderBy = searchParams.get('orderBy') || undefined;
-  const orderDir = searchParams.get('orderDir') as 'ASC' | 'DESC' | undefined;
+  const orderDirRaw = searchParams.get('orderDir');
+  const orderDir: 'ASC' | 'DESC' | undefined = 
+    orderDirRaw === 'DESC' ? 'DESC' : 
+    orderDirRaw === 'ASC' ? 'ASC' : 
+    orderDirRaw ? undefined : undefined; // Invalid values result in undefined (default to ASC)
   const limit = limitStr ? parseInt(limitStr, 10) : 50;
   const offset = offsetStr ? parseInt(offsetStr, 10) : 0;
 
   if (!database) {
     return NextResponse.json(
       { error: 'database query parameter is required' },
+      { status: 400 }
+    );
+  }
+
+  // Validate orderDir if provided
+  if (orderDirRaw && orderDirRaw !== 'ASC' && orderDirRaw !== 'DESC') {
+    return NextResponse.json(
+      { error: 'Invalid orderDir parameter. Must be ASC or DESC.' },
       { status: 400 }
     );
   }

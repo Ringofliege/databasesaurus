@@ -1216,7 +1216,7 @@ function TableDataBrowserModal({
 
       {/* Delete Confirmation Modal */}
       {deleteConfirm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-60">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center" style={{ zIndex: 60 }}>
           <div className="card w-full max-w-md mx-4">
             <div className="p-6 border-b border-[var(--border)]">
               <h2 className="text-xl font-bold flex items-center gap-2">
