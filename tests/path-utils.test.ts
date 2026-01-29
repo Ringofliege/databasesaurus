@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   isValidPath,
   resolveWorkingDirectory,
@@ -6,6 +6,8 @@ import {
   isValidBranchName,
   isValidSlug,
   generateSlug,
+  findPrismaSchemaDir,
+  getPrismaSchemaRelativePath,
 } from '../src/lib/path-utils';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -229,5 +231,205 @@ describe('generateSlug', () => {
 
   it('should handle German umlauts', () => {
     expect(generateSlug('Über Projekt')).toBe('ber-projekt');
+  });
+});
+
+describe('findPrismaSchemaDir', () => {
+  const tempDir = path.join(os.tmpdir(), 'test-prisma-' + Date.now());
+
+  beforeAll(() => {
+    fs.mkdirSync(tempDir, { recursive: true });
+  });
+
+  afterAll(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('should find schema in root prisma/ directory', () => {
+    const workspacePath = path.join(tempDir, 'root-prisma');
+    const prismaDir = path.join(workspacePath, 'prisma');
+    fs.mkdirSync(prismaDir, { recursive: true });
+    fs.writeFileSync(path.join(prismaDir, 'schema.prisma'), '');
+
+    const result = findPrismaSchemaDir(workspacePath);
+    expect(result).toBe(prismaDir);
+  });
+
+  it('should find schema in packages/db/prisma/', () => {
+    const workspacePath = path.join(tempDir, 'packages-db');
+    const prismaDir = path.join(workspacePath, 'packages', 'db', 'prisma');
+    fs.mkdirSync(prismaDir, { recursive: true });
+    fs.writeFileSync(path.join(prismaDir, 'schema.prisma'), '');
+
+    const result = findPrismaSchemaDir(workspacePath);
+    expect(result).toBe(prismaDir);
+  });
+
+  it('should find schema in db/prisma/', () => {
+    const workspacePath = path.join(tempDir, 'db-prisma');
+    const prismaDir = path.join(workspacePath, 'db', 'prisma');
+    fs.mkdirSync(prismaDir, { recursive: true });
+    fs.writeFileSync(path.join(prismaDir, 'schema.prisma'), '');
+
+    const result = findPrismaSchemaDir(workspacePath);
+    expect(result).toBe(prismaDir);
+  });
+
+  it('should find schema in src/prisma/', () => {
+    const workspacePath = path.join(tempDir, 'src-prisma');
+    const prismaDir = path.join(workspacePath, 'src', 'prisma');
+    fs.mkdirSync(prismaDir, { recursive: true });
+    fs.writeFileSync(path.join(prismaDir, 'schema.prisma'), '');
+
+    const result = findPrismaSchemaDir(workspacePath);
+    expect(result).toBe(prismaDir);
+  });
+
+  it('should find schema via recursive search in custom location', () => {
+    const workspacePath = path.join(tempDir, 'custom-location');
+    const prismaDir = path.join(workspacePath, 'custom', 'path', 'prisma');
+    fs.mkdirSync(prismaDir, { recursive: true });
+    fs.writeFileSync(path.join(prismaDir, 'schema.prisma'), '');
+
+    const result = findPrismaSchemaDir(workspacePath);
+    expect(result).toBe(prismaDir);
+  });
+
+  it('should skip node_modules directory', () => {
+    const workspacePath = path.join(tempDir, 'skip-node-modules');
+    const nodeModulesDir = path.join(workspacePath, 'node_modules', 'some-package', 'prisma');
+    fs.mkdirSync(nodeModulesDir, { recursive: true });
+    fs.writeFileSync(path.join(nodeModulesDir, 'schema.prisma'), '');
+
+    const result = findPrismaSchemaDir(workspacePath);
+    expect(result).toBeNull();
+  });
+
+  it('should skip .git directory', () => {
+    const workspacePath = path.join(tempDir, 'skip-git');
+    const gitDir = path.join(workspacePath, '.git', 'prisma');
+    fs.mkdirSync(gitDir, { recursive: true });
+    fs.writeFileSync(path.join(gitDir, 'schema.prisma'), '');
+
+    const result = findPrismaSchemaDir(workspacePath);
+    expect(result).toBeNull();
+  });
+
+  it('should skip dist directory', () => {
+    const workspacePath = path.join(tempDir, 'skip-dist');
+    const distDir = path.join(workspacePath, 'dist', 'prisma');
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'schema.prisma'), '');
+
+    const result = findPrismaSchemaDir(workspacePath);
+    expect(result).toBeNull();
+  });
+
+  it('should skip build directory', () => {
+    const workspacePath = path.join(tempDir, 'skip-build');
+    const buildDir = path.join(workspacePath, 'build', 'prisma');
+    fs.mkdirSync(buildDir, { recursive: true });
+    fs.writeFileSync(path.join(buildDir, 'schema.prisma'), '');
+
+    const result = findPrismaSchemaDir(workspacePath);
+    expect(result).toBeNull();
+  });
+
+  it('should skip hidden directories', () => {
+    const workspacePath = path.join(tempDir, 'skip-hidden');
+    const hiddenDir = path.join(workspacePath, '.hidden', 'prisma');
+    fs.mkdirSync(hiddenDir, { recursive: true });
+    fs.writeFileSync(path.join(hiddenDir, 'schema.prisma'), '');
+
+    const result = findPrismaSchemaDir(workspacePath);
+    expect(result).toBeNull();
+  });
+
+  it('should respect maxDepth parameter', () => {
+    const workspacePath = path.join(tempDir, 'max-depth');
+    // Create schema at depth 3
+    const deepDir = path.join(workspacePath, 'a', 'b', 'c', 'prisma');
+    fs.mkdirSync(deepDir, { recursive: true });
+    fs.writeFileSync(path.join(deepDir, 'schema.prisma'), '');
+
+    // With maxDepth 2, should not find it
+    const result1 = findPrismaSchemaDir(workspacePath, 2);
+    expect(result1).toBeNull();
+
+    // With maxDepth 5, should find it
+    const result2 = findPrismaSchemaDir(workspacePath, 5);
+    expect(result2).toBe(deepDir);
+  });
+
+  it('should return null when no schema exists', () => {
+    const workspacePath = path.join(tempDir, 'no-schema');
+    fs.mkdirSync(workspacePath, { recursive: true });
+
+    const result = findPrismaSchemaDir(workspacePath);
+    expect(result).toBeNull();
+  });
+
+  it('should prefer common locations over deep search', () => {
+    const workspacePath = path.join(tempDir, 'prefer-common');
+    // Create schema in both common location and custom location
+    const commonPrismaDir = path.join(workspacePath, 'prisma');
+    const customPrismaDir = path.join(workspacePath, 'custom', 'prisma');
+    fs.mkdirSync(commonPrismaDir, { recursive: true });
+    fs.mkdirSync(customPrismaDir, { recursive: true });
+    fs.writeFileSync(path.join(commonPrismaDir, 'schema.prisma'), '');
+    fs.writeFileSync(path.join(customPrismaDir, 'schema.prisma'), '');
+
+    const result = findPrismaSchemaDir(workspacePath);
+    expect(result).toBe(commonPrismaDir);
+  });
+});
+
+describe('getPrismaSchemaRelativePath', () => {
+  const tempDir = path.join(os.tmpdir(), 'test-prisma-rel-' + Date.now());
+
+  beforeAll(() => {
+    fs.mkdirSync(tempDir, { recursive: true });
+  });
+
+  afterAll(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('should return empty string for root prisma/ directory', () => {
+    const workspacePath = path.join(tempDir, 'root-prisma');
+    const prismaDir = path.join(workspacePath, 'prisma');
+    fs.mkdirSync(prismaDir, { recursive: true });
+    fs.writeFileSync(path.join(prismaDir, 'schema.prisma'), '');
+
+    const result = getPrismaSchemaRelativePath(workspacePath);
+    expect(result).toBe('');
+  });
+
+  it('should return packages/db for packages/db/prisma/', () => {
+    const workspacePath = path.join(tempDir, 'packages-db');
+    const prismaDir = path.join(workspacePath, 'packages', 'db', 'prisma');
+    fs.mkdirSync(prismaDir, { recursive: true });
+    fs.writeFileSync(path.join(prismaDir, 'schema.prisma'), '');
+
+    const result = getPrismaSchemaRelativePath(workspacePath);
+    expect(result).toBe(path.join('packages', 'db'));
+  });
+
+  it('should return db for db/prisma/', () => {
+    const workspacePath = path.join(tempDir, 'db-prisma');
+    const prismaDir = path.join(workspacePath, 'db', 'prisma');
+    fs.mkdirSync(prismaDir, { recursive: true });
+    fs.writeFileSync(path.join(prismaDir, 'schema.prisma'), '');
+
+    const result = getPrismaSchemaRelativePath(workspacePath);
+    expect(result).toBe('db');
+  });
+
+  it('should return null when no schema exists', () => {
+    const workspacePath = path.join(tempDir, 'no-schema');
+    fs.mkdirSync(workspacePath, { recursive: true });
+
+    const result = getPrismaSchemaRelativePath(workspacePath);
+    expect(result).toBeNull();
   });
 });
