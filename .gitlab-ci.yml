@@ -1,0 +1,52 @@
+# This file is a GitLab CI/CD pipeline configuration.
+# It defines a pipeline to build a Docker image for the application
+# and push it to the project's GitLab Container Registry.
+
+variables:
+  # Use a recent and stable version of Docker.
+  DOCKER_VERSION: '24.0.5'
+  # The image will be tagged with the project's registry path.
+  IMAGE_NAME: $CI_REGISTRY_IMAGE
+
+# Default settings for all jobs in this pipeline.
+# 'pw-k8s-small' is a GitLab Runner tag, ensuring the job runs on a runner with this tag.
+default:
+  tags: ["pw-k8s-small"]
+
+stages:
+  - build
+
+# This is a template for jobs that need to build Docker images.
+# It sets up Docker-in-Docker (dind) service and handles login to the GitLab registry.
+.docker-job-kubernetes:
+  image: docker:${DOCKER_VERSION}
+  variables:
+    # This tells the Docker client how to connect to the dind service.
+    DOCKER_HOST: "tcp://docker:2375"
+    # Disable TLS for the Docker daemon connection.
+    DOCKER_TLS_CERTDIR: ""
+  services:
+    # This starts a Docker-in-Docker service.
+    - name: docker:${DOCKER_VERSION}-dind
+      command: ["--tls=false"]
+  before_script:
+    # Display Docker version and info for debugging.
+    - docker info
+    - docker ps
+    # Log in to the GitLab Container Registry.
+    # CI_REGISTRY_USER and CI_REGISTRY_PASSWORD are provided by GitLab CI.
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+
+# This job builds the application's Docker image and pushes it to the registry.
+build_image:
+  stage: build
+  extends: .docker-job-kubernetes
+  script:
+    - docker build --pull -t "$IMAGE_NAME:$CI_COMMIT_REF_SLUG" .
+    - docker push "$IMAGE_NAME:$CI_COMMIT_REF_SLUG"
+    - |
+      if [ "$CI_COMMIT_BRANCH" == "$CI_DEFAULT_BRANCH" ]; then
+        echo "This is the default branch. Tagging image as latest."
+        docker tag "$IMAGE_NAME:$CI_COMMIT_REF_SLUG" "$IMAGE_NAME:latest"
+        docker push "$IMAGE_NAME:latest"
+      fi
