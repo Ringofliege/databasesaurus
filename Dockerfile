@@ -1,7 +1,7 @@
 # Use Node.js 20 Alpine as base
 FROM node:20-alpine AS base
 
-# Install dependencies needed for Prisma, Git, and SSH
+# Install dependencies needed for Prisma, Git, SSH, and su-exec for proper user switching
 RUN apk add --no-cache \
     openssl \
     libc6-compat \
@@ -9,7 +9,8 @@ RUN apk add --no-cache \
     openssh-client \
     python3 \
     make \
-    g++
+    g++ \
+    su-exec
 
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@latest --activate
@@ -66,7 +67,11 @@ RUN pnpm prisma generate
 COPY start.sh ./
 RUN chmod +x start.sh
 
-USER nextjs
+# Copy entrypoint script (runs as root to fix permissions)
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+# Don't switch to nextjs user yet - entrypoint will do it after fixing permissions
 EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
@@ -75,5 +80,6 @@ ENV HOSTNAME="0.0.0.0"
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT:-3000}/api/projects || exit 1
 
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["./start.sh"]
 
