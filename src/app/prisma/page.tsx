@@ -22,6 +22,20 @@ interface RunStatus {
   logs: string[];
 }
 
+interface CloneResponse {
+  success: boolean;
+  workspacePath: string;
+  runId?: string;
+  validation?: {
+    hasGit: boolean;
+    hasPrismaDir: boolean;
+    prismaSchemaPath: string | null;
+    topLevelFiles: string[];
+    allContents: string[];
+  };
+  message?: string;
+}
+
 export default function PrismaPage() {
   const { activeProject, sessionStatus, authHeaders } = useApp();
   const router = useRouter();
@@ -29,6 +43,7 @@ export default function PrismaPage() {
   const [logs, setLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cloneResponse, setCloneResponse] = useState<CloneResponse | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   // Redirect if no session
@@ -122,6 +137,7 @@ export default function PrismaPage() {
     setError(null);
     setLogs([]);
     setCurrentRun(null);
+    setCloneResponse(null);
 
     try {
       const res = await fetch(`/api/projects/${activeProject.id}/prisma/${endpoint}`, {
@@ -132,15 +148,35 @@ export default function PrismaPage() {
         },
       });
 
+      const data = await res.json();
+
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || `Failed to run ${label}`);
+        // Handle error responses
+        const errorMsg = data.error || data.message || `Failed to run ${label}`;
+        throw new Error(errorMsg);
       }
 
-      const data = await res.json();
-      
-      if (data.runId) {
-        // Stream logs for this run
+      // Handle clone/refresh response specially
+      if (endpoint === 'clone') {
+        setCloneResponse(data);
+        if (data.success) {
+          setCurrentRun({
+            runId: data.runId || '',
+            status: 'success',
+            exitCode: 0,
+            logs: [],
+          });
+        } else {
+          setCurrentRun({
+            runId: data.runId || '',
+            status: 'failed',
+            exitCode: 1,
+            logs: [],
+          });
+          setError(data.message || data.error);
+        }
+      } else if (data.runId) {
+        // Stream logs for other commands
         await streamLogs(data.runId);
       } else {
         setCurrentRun({
@@ -322,6 +358,93 @@ export default function PrismaPage() {
           <div ref={logsEndRef} />
         </div>
       </div>
+
+      {/* Clone Validation Results */}
+      {cloneResponse && (
+        <div className="card p-6">
+          <h3 className="font-semibold mb-4 text-lg">Clone Validation Results</h3>
+          <div className="space-y-4">
+            {cloneResponse.message && (
+              <div className={`p-3 rounded ${cloneResponse.success ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'}`}>
+                {cloneResponse.message}
+              </div>
+            )}
+            
+            {cloneResponse.validation && (
+              <div className="grid grid-cols-2 gap-4">
+                <div className="border border-[var(--border)] rounded p-3">
+                  <p className="text-sm text-[var(--muted)] mb-2">Git Repository</p>
+                  <p className="flex items-center gap-2">
+                    {cloneResponse.validation.hasGit ? (
+                      <>
+                        <CheckCircle className="w-4 h-4 text-green-500" />
+                        <span className="text-green-600 dark:text-green-400">Found .git directory</span>
+                      </>
+                    ) : (
+                      <>
+                        <XCircle className="w-4 h-4 text-red-500" />
+                        <span className="text-red-600 dark:text-red-400">No .git directory</span>
+                      </>
+                    )}
+                  </p>
+                </div>
+
+                <div className="border border-[var(--border)] rounded p-3">
+                  <p className="text-sm text-[var(--muted)] mb-2">Prisma Directory</p>
+                  <p className="flex items-center gap-2">
+                    {cloneResponse.validation.hasPrismaDir ? (
+                      <>
+                        <CheckCircle className="w-4 h-4 text-green-500" />
+                        <span className="text-green-600 dark:text-green-400">Found prisma/</span>
+                      </>
+                    ) : (
+                      <>
+                        <XCircle className="w-4 h-4 text-red-500" />
+                        <span className="text-red-600 dark:text-red-400">No prisma/ directory</span>
+                      </>
+                    )}
+                  </p>
+                </div>
+
+                <div className="border border-[var(--border)] rounded p-3">
+                  <p className="text-sm text-[var(--muted)] mb-2">Schema File</p>
+                  <p className="flex items-center gap-2">
+                    {cloneResponse.validation.prismaSchemaPath ? (
+                      <>
+                        <CheckCircle className="w-4 h-4 text-green-500" />
+                        <span className="text-green-600 dark:text-green-400 font-mono text-xs">{cloneResponse.validation.prismaSchemaPath}</span>
+                      </>
+                    ) : (
+                      <>
+                        <XCircle className="w-4 h-4 text-red-500" />
+                        <span className="text-red-600 dark:text-red-400">schema.prisma not found</span>
+                      </>
+                    )}
+                  </p>
+                </div>
+
+                <div className="border border-[var(--border)] rounded p-3">
+                  <p className="text-sm text-[var(--muted)] mb-2">Workspace Path</p>
+                  <p className="font-mono text-xs text-[var(--foreground)] break-all">{cloneResponse.workspacePath}</p>
+                </div>
+
+                {cloneResponse.validation.topLevelFiles.length > 0 && (
+                  <div className="col-span-2 border border-[var(--border)] rounded p-3">
+                    <p className="text-sm text-[var(--muted)] mb-2">Repository Contents (top-level)</p>
+                    <div className="flex flex-wrap gap-2">
+                      {cloneResponse.validation.topLevelFiles.map((file, i) => (
+                        <span key={i} className="bg-[var(--background)] px-2 py-1 rounded text-xs font-mono">
+                          {file}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

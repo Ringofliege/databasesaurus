@@ -4,13 +4,38 @@ services:
     expose:
       - '3000'
     environment:
-      PORT: 3000
-      HOSTNAME: 0.0.0.0
-      DATABASE_URL: '${DATABASE_URL}'
-      BASIC_AUTH_USER: '${BASIC_AUTH_USER:-admin}'
-      BASIC_AUTH_PASS: '${BASIC_AUTH_PASS:-changeme}'
-      GIT_SSH_PRIVATE_KEY: '${GIT_SSH_PRIVATE_KEY:-}'
-      REDIS_URL: '${REDIS_URL:-redis://redis:6379}'
+      # Network configuration
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"  # Custom port - healthcheck will automatically use this
+
+      # Database connection (required)
+      DATABASE_URL: ${DATABASE_URL}
+
+      # Authentication (required)
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-admin}
+      BASIC_AUTH_PASS: ${BASIC_AUTH_PASS:-changeme}
+
+      # GitLab Repository Cloning (optional - needed for Prisma operations)
+      # Choose ONE authentication method:
+      
+      # Option 1: HTTPS with Personal Access Token (RECOMMENDED - most reliable)
+      # 1. Generate token on GitLab: Settings > Access Tokens > Create token with 'read_repository' scope
+      # 2. Set the token in your environment or .env file:
+      #    export GITLAB_TOKEN=glpat-xxxxxxxxxxxx
+      # 3. The token will be automatically injected from your environment
+      GITLAB_TOKEN: ${GITLAB_TOKEN}
+      
+      # Option 2: SSH with Deploy Key (base64-encoded, for ED25519 keys)
+      # 1. Generate: ssh-keygen -t ed25519 -f ~/.ssh/gitlab_deploy_key -N ""
+      # 2. Encode: cat ~/.ssh/gitlab_deploy_key | base64 -w0
+      # 3. Add to GitLab: Settings > Deploy Keys > Add new (enable read access)
+      # GIT_SSH_PRIVATE_KEY_B64: ${GIT_SSH_PRIVATE_KEY_B64}
+      
+      # Option 3: SSH with mounted volume (see volumes section below)
+      # Mount your SSH key at /home/nextjs/.ssh/id_ed25519
+
+      # Redis connection (optional, uses internal redis service)
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     volumes:
       - 'workspaces:/data/workspaces'
     depends_on:

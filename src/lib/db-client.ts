@@ -21,6 +21,10 @@ export interface DbClient {
   listTables(database: string): Promise<string[]>;
   getTablePreview(database: string, table: string, limit?: number): Promise<QueryResult>;
   truncateTable(database: string, table: string): Promise<void>;
+  getTableData(database: string, table: string, options?: TableDataOptions): Promise<QueryResult>;
+  getTableColumns(database: string, table: string): Promise<ColumnInfo[]>;
+  updateRow(database: string, table: string, primaryKey: Record<string, unknown>, data: Record<string, unknown>): Promise<void>;
+  deleteRow(database: string, table: string, primaryKey: Record<string, unknown>): Promise<void>;
   
   // User operations
   createUser(username: string, password: string): Promise<void>;
@@ -51,6 +55,20 @@ export interface QueryResult {
   fields: string[];
   executionTimeMs: number;
   truncated: boolean;
+}
+
+export interface TableDataOptions {
+  limit?: number;
+  offset?: number;
+  orderBy?: string;
+  orderDir?: 'ASC' | 'DESC';
+}
+
+export interface ColumnInfo {
+  name: string;
+  type: string;
+  nullable: boolean;
+  isPrimary?: boolean;
 }
 
 const QUERY_ROW_LIMIT = 200;
@@ -249,6 +267,175 @@ export class MySqlClient implements DbClient {
     }
   }
   
+  async getTableData(database: string, table: string, options?: TableDataOptions): Promise<QueryResult> {
+    if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error('Invalid table name.');
+    }
+    
+    const limit = options?.limit || 50;
+    const offset = options?.offset || 0;
+    const orderBy = options?.orderBy || 'id';
+    const orderDir = options?.orderDir || 'ASC';
+    
+    // Validate orderBy to prevent SQL injection
+    if (!/^[a-zA-Z0-9_]+$/.test(orderBy)) {
+      throw new Error('Invalid orderBy column.');
+    }
+    
+    const conn = await this.pool!.getConnection();
+    const startTime = Date.now();
+    
+    try {
+      await conn.query(`USE \`${database}\``);
+      const [rows] = await conn.query<mysql.RowDataPacket[]>(
+        `SELECT * FROM \`${table}\` ORDER BY \`${orderBy}\` ${orderDir} LIMIT ? OFFSET ?`,
+        [limit + 1, offset]
+      );
+      
+      const executionTimeMs = Date.now() - startTime;
+      const resultRows = rows as Record<string, unknown>[];
+      const truncated = resultRows.length > limit;
+      const limitedRows = truncated ? resultRows.slice(0, limit) : resultRows;
+      const fields = limitedRows.length > 0 ? Object.keys(limitedRows[0]) : [];
+      
+      return {
+        rows: limitedRows,
+        rowCount: limitedRows.length,
+        fields,
+        executionTimeMs,
+        truncated,
+      };
+    } finally {
+      conn.release();
+    }
+  }
+  
+  async getTableColumns(database: string, table: string): Promise<ColumnInfo[]> {
+    if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error('Invalid table name.');
+    }
+    
+    const conn = await this.pool!.getConnection();
+    
+    try {
+      await conn.query(`USE \`${database}\``);
+      
+      // Get columns
+      const [columns] = await conn.query<mysql.RowDataPacket[]>(
+        `SELECT COLUMN_NAME as name, COLUMN_TYPE as type, IS_NULLABLE as nullable FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+        [table]
+      );
+      
+      // Get primary key columns
+      const [pkInfo] = await conn.query<mysql.RowDataPacket[]>(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY'`,
+        [table]
+      );
+      
+      const primaryKeyColumns = new Set(pkInfo.map(row => row.COLUMN_NAME as string));
+      
+      return columns.map(col => ({
+        name: col.name as string,
+        type: col.type as string,
+        nullable: (col.nullable as string) === 'YES',
+        isPrimary: primaryKeyColumns.has(col.name as string),
+      }));
+    } finally {
+      conn.release();
+    }
+  }
+  
+  async updateRow(database: string, table: string, primaryKey: Record<string, unknown>, data: Record<string, unknown>): Promise<void> {
+    if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error('Invalid table name.');
+    }
+    
+    const conn = await this.pool!.getConnection();
+    try {
+      await conn.query(`USE \`${database}\``);
+      
+      const setClauses: string[] = [];
+      const values: unknown[] = [];
+      
+      for (const [key, val] of Object.entries(data)) {
+        if (!/^[a-zA-Z0-9_]+$/.test(key)) {
+          throw new Error(`Invalid column name: ${key}`);
+        }
+        setClauses.push(`\`${key}\` = ?`);
+        values.push(val);
+      }
+      
+      const whereClauses: string[] = [];
+      for (const [key] of Object.entries(primaryKey)) {
+        if (!/^[a-zA-Z0-9_]+$/.test(key)) {
+          throw new Error(`Invalid column name: ${key}`);
+        }
+        whereClauses.push(`\`${key}\` = ?`);
+        values.push(primaryKey[key]);
+      }
+      
+      if (setClauses.length === 0 || whereClauses.length === 0) {
+        throw new Error('No columns to update or no primary key provided');
+      }
+      
+      const sql = `UPDATE \`${table}\` SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')}`;
+      console.log('MySQL updateRow SQL:', sql, 'Values:', values, 'PrimaryKey:', primaryKey, 'Data:', data);
+      const result = await conn.query(sql, values);
+      console.log('MySQL updateRow result:', result[0].affectedRows, 'rows affected');
+    } finally {
+      conn.release();
+    }
+  }
+  
+  async deleteRow(database: string, table: string, primaryKey: Record<string, unknown>): Promise<void> {
+    if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error('Invalid table name.');
+    }
+    
+    const conn = await this.pool!.getConnection();
+    try {
+      await conn.query(`USE \`${database}\``);
+      
+      const whereClauses: string[] = [];
+      const values: unknown[] = [];
+      
+      for (const [key] of Object.entries(primaryKey)) {
+        if (!/^[a-zA-Z0-9_]+$/.test(key)) {
+          throw new Error(`Invalid column name: ${key}`);
+        }
+        whereClauses.push(`\`${key}\` = ?`);
+        values.push(primaryKey[key]);
+      }
+      
+      if (whereClauses.length === 0) {
+        throw new Error('No primary key provided');
+      }
+      
+      const sql = `DELETE FROM \`${table}\` WHERE ${whereClauses.join(' AND ')}`;
+      console.log('MySQL deleteRow SQL:', sql, 'Values:', values, 'PrimaryKey:', primaryKey);
+      const result = await conn.query(sql, values);
+      console.log('MySQL deleteRow result:', result[0].affectedRows, 'rows affected');
+    } finally {
+      conn.release();
+    }
+  }
+
   async createUser(username: string, password: string): Promise<void> {
     if (!this.pool) await this.connect();
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
@@ -562,6 +749,184 @@ export class PostgresClient implements DbClient {
     }
   }
   
+  async getTableData(database: string, table: string, options?: TableDataOptions): Promise<QueryResult> {
+    if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error('Invalid table name.');
+    }
+    
+    const limit = options?.limit || 50;
+    const offset = options?.offset || 0;
+    const orderBy = options?.orderBy || 'id';
+    const orderDir = options?.orderDir || 'ASC';
+    
+    // Validate orderBy to prevent SQL injection
+    if (!/^[a-zA-Z0-9_]+$/.test(orderBy)) {
+      throw new Error('Invalid orderBy column.');
+    }
+    
+    const targetPool = new Pool(this.getPoolConfig(database));
+    const startTime = Date.now();
+    
+    try {
+      const result = await targetPool.query(
+        `SELECT * FROM "${table}" ORDER BY "${orderBy}" ${orderDir} LIMIT $1 OFFSET $2`,
+        [limit + 1, offset]
+      );
+      
+      const executionTimeMs = Date.now() - startTime;
+      const truncated = result.rows.length > limit;
+      const limitedRows = truncated ? result.rows.slice(0, limit) : result.rows;
+      const fields = result.fields?.map(f => f.name) || 
+                    (limitedRows.length > 0 ? Object.keys(limitedRows[0]) : []);
+      
+      return {
+        rows: limitedRows,
+        rowCount: limitedRows.length,
+        fields,
+        executionTimeMs,
+        truncated,
+      };
+    } finally {
+      await targetPool.end();
+    }
+  }
+  
+  async getTableColumns(database: string, table: string): Promise<ColumnInfo[]> {
+    if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error('Invalid table name.');
+    }
+    
+    const targetPool = new Pool(this.getPoolConfig(database));
+    
+    try {
+      // Get columns and their primary key status
+      const result = await targetPool.query(
+        `
+        SELECT 
+          c.column_name as name, 
+          c.data_type as type, 
+          c.is_nullable,
+          CASE WHEN tc.constraint_type = 'PRIMARY KEY' THEN true ELSE false END as is_primary
+        FROM information_schema.columns c
+        LEFT JOIN information_schema.key_column_usage kcu 
+          ON c.table_name = kcu.table_name 
+          AND c.column_name = kcu.column_name
+          AND c.table_schema = kcu.table_schema
+        LEFT JOIN information_schema.table_constraints tc
+          ON kcu.constraint_name = tc.constraint_name
+          AND kcu.table_schema = tc.table_schema
+          AND tc.constraint_type = 'PRIMARY KEY'
+        WHERE c.table_name = $1
+        ORDER BY c.ordinal_position
+        `,
+        [table]
+      );
+      
+      return result.rows.map(col => ({
+        name: col.name as string,
+        type: col.type as string,
+        nullable: (col.is_nullable as string) === 'YES',
+        isPrimary: col.is_primary === true,
+      }));
+    } finally {
+      await targetPool.end();
+    }
+  }
+  
+  async updateRow(database: string, table: string, primaryKey: Record<string, unknown>, data: Record<string, unknown>): Promise<void> {
+    if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error('Invalid table name.');
+    }
+    
+    const targetPool = new Pool(this.getPoolConfig(database));
+    
+    try {
+      const setClauses: string[] = [];
+      const values: unknown[] = [];
+      let paramCount = 1;
+      
+      for (const [key, val] of Object.entries(data)) {
+        if (!/^[a-zA-Z0-9_]+$/.test(key)) {
+          throw new Error(`Invalid column name: ${key}`);
+        }
+        setClauses.push(`"${key}" = $${paramCount}`);
+        values.push(val);
+        paramCount++;
+      }
+      
+      const whereClauses: string[] = [];
+      for (const [key] of Object.entries(primaryKey)) {
+        if (!/^[a-zA-Z0-9_]+$/.test(key)) {
+          throw new Error(`Invalid column name: ${key}`);
+        }
+        whereClauses.push(`"${key}" = $${paramCount}`);
+        values.push(primaryKey[key]);
+        paramCount++;
+      }
+      
+      if (setClauses.length === 0 || whereClauses.length === 0) {
+        throw new Error('No columns to update or no primary key provided');
+      }
+      
+      const sql = `UPDATE "${table}" SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')}`;
+      console.log('PostgreSQL updateRow SQL:', sql, 'Values:', values, 'PrimaryKey:', primaryKey, 'Data:', data);
+      const result = await targetPool.query(sql, values);
+      console.log('PostgreSQL updateRow result:', result.rowCount, 'rows affected');
+    } finally {
+      await targetPool.end();
+    }
+  }
+  
+  async deleteRow(database: string, table: string, primaryKey: Record<string, unknown>): Promise<void> {
+    if (!this.pool) await this.connect();
+    if (!/^[a-zA-Z0-9_]+$/.test(database)) {
+      throw new Error('Invalid database name.');
+    }
+    if (!/^[a-zA-Z0-9_]+$/.test(table)) {
+      throw new Error('Invalid table name.');
+    }
+    
+    const targetPool = new Pool(this.getPoolConfig(database));
+    
+    try {
+      const whereClauses: string[] = [];
+      const values: unknown[] = [];
+      let paramCount = 1;
+      
+      for (const [key] of Object.entries(primaryKey)) {
+        if (!/^[a-zA-Z0-9_]+$/.test(key)) {
+          throw new Error(`Invalid column name: ${key}`);
+        }
+        whereClauses.push(`"${key}" = $${paramCount}`);
+        values.push(primaryKey[key]);
+        paramCount++;
+      }
+      
+      if (whereClauses.length === 0) {
+        throw new Error('No primary key provided');
+      }
+      
+      const sql = `DELETE FROM "${table}" WHERE ${whereClauses.join(' AND ')}`;
+      console.log('PostgreSQL deleteRow SQL:', sql, 'Values:', values, 'PrimaryKey:', primaryKey);
+      const result = await targetPool.query(sql, values);
+      console.log('PostgreSQL deleteRow result:', result.rowCount, 'rows affected');
+    } finally {
+      await targetPool.end();
+    }
+  }
+
   async createUser(username: string, password: string): Promise<void> {
     if (!this.pool) await this.connect();
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
