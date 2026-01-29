@@ -22,7 +22,11 @@ import {
   Eraser,
   ChevronRight,
   ChevronDown,
-  X
+  ChevronLeft,
+  X,
+  Search,
+  Edit,
+  Save,
 } from 'lucide-react';
 
 interface Overview {
@@ -42,6 +46,15 @@ interface QueryResult {
   fields: string[];
   executionTimeMs: number;
   truncated: boolean;
+  totalCount?: number;
+}
+
+interface ColumnInfo {
+  name: string;
+  type: string;
+  nullable: boolean;
+  isPrimary: boolean;
+  defaultValue?: string;
 }
 
 type Tab = 'overview' | 'databases' | 'users' | 'console';
@@ -230,6 +243,7 @@ function DatabasesTab() {
   const [tablesLoading, setTablesLoading] = useState(false);
   const [tablePreview, setTablePreview] = useState<{ table: string; data: QueryResult } | null>(null);
   const [truncateConfirm, setTruncateConfirm] = useState<{ database: string; table: string } | null>(null);
+  const [browseData, setBrowseData] = useState<{ database: string; table: string } | null>(null);
 
   const fetchDatabases = useCallback(async () => {
     if (!activeProject) return;
@@ -539,6 +553,14 @@ function DatabasesTab() {
                                 </span>
                                 <div className="flex gap-2">
                                   <button
+                                    onClick={() => setBrowseData({ database: db, table })}
+                                    className="btn btn-primary text-xs py-1 px-2 flex items-center gap-1"
+                                    title="Browse and edit table data"
+                                  >
+                                    <Database className="w-3 h-3" />
+                                    Browse
+                                  </button>
+                                  <button
                                     onClick={() => handlePreviewTable(db, table)}
                                     className="btn btn-secondary text-xs py-1 px-2 flex items-center gap-1"
                                     title="Preview first 3 rows"
@@ -618,6 +640,14 @@ function DatabasesTab() {
           table={tablePreview.table}
           data={tablePreview.data}
           onClose={() => setTablePreview(null)}
+        />
+      )}
+
+      {browseData && (
+        <TableDataBrowserModal
+          database={browseData.database}
+          table={browseData.table}
+          onClose={() => setBrowseData(null)}
         />
       )}
     </div>
@@ -796,6 +826,434 @@ function TablePreviewModal({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function TableDataBrowserModal({
+  database,
+  table,
+  onClose,
+}: {
+  database: string;
+  table: string;
+  onClose: () => void;
+}) {
+  const { activeProject, authHeaders } = useApp();
+  const [data, setData] = useState<QueryResult | null>(null);
+  const [columns, setColumns] = useState<ColumnInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(0);
+  const [pageSize] = useState(50);
+  const [editingRow, setEditingRow] = useState<number | null>(null);
+  const [editedData, setEditedData] = useState<Record<string, unknown>>({});
+  const [deleteConfirm, setDeleteConfirm] = useState<Record<string, unknown> | null>(null);
+  const [actionLoading, setActionLoading] = useState(false);
+
+  const fetchColumns = useCallback(async () => {
+    if (!activeProject) return;
+
+    try {
+      const res = await fetch(
+        `/api/projects/${activeProject.id}/db/tables/${encodeURIComponent(table)}/columns?database=${encodeURIComponent(database)}`,
+        { headers: authHeaders() }
+      );
+
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.error || 'Failed to fetch columns');
+      }
+
+      const d = await res.json();
+      setColumns(d.columns);
+    } catch (err) {
+      console.error('Error fetching columns:', err);
+    }
+  }, [activeProject, authHeaders, database, table]);
+
+  const fetchData = useCallback(async () => {
+    if (!activeProject) return;
+    setLoading(true);
+    setError(null);
+
+    try {
+      const params = new URLSearchParams({
+        database,
+        limit: String(pageSize),
+        offset: String(page * pageSize),
+      });
+      if (search) params.set('search', search);
+
+      const res = await fetch(
+        `/api/projects/${activeProject.id}/db/tables/${encodeURIComponent(table)}/data?${params}`,
+        { headers: authHeaders() }
+      );
+
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.error || 'Failed to fetch data');
+      }
+
+      const d = await res.json();
+      setData(d.result);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [activeProject, authHeaders, database, table, page, pageSize, search]);
+
+  useEffect(() => {
+    fetchColumns();
+  }, [fetchColumns]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  const primaryKeyColumns = columns.filter(c => c.isPrimary);
+
+  const getPrimaryKey = (row: Record<string, unknown>): Record<string, unknown> => {
+    const pk: Record<string, unknown> = {};
+    if (primaryKeyColumns.length > 0) {
+      for (const col of primaryKeyColumns) {
+        pk[col.name] = row[col.name];
+      }
+    } else {
+      // Fall back to all columns if no primary key
+      for (const key of Object.keys(row)) {
+        pk[key] = row[key];
+      }
+    }
+    return pk;
+  };
+
+  const handleEdit = (idx: number, row: Record<string, unknown>) => {
+    setEditingRow(idx);
+    setEditedData({ ...row });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingRow(null);
+    setEditedData({});
+  };
+
+  const handleSaveEdit = async () => {
+    if (!activeProject || editingRow === null || !data) return;
+
+    const originalRow = data.rows[editingRow];
+    const primaryKey = getPrimaryKey(originalRow);
+
+    // Only include changed fields
+    const changedData: Record<string, unknown> = {};
+    for (const key of Object.keys(editedData)) {
+      if (editedData[key] !== originalRow[key]) {
+        changedData[key] = editedData[key];
+      }
+    }
+
+    if (Object.keys(changedData).length === 0) {
+      handleCancelEdit();
+      return;
+    }
+
+    setActionLoading(true);
+
+    try {
+      const res = await fetch(
+        `/api/projects/${activeProject.id}/db/tables/${encodeURIComponent(table)}/data`,
+        {
+          method: 'PUT',
+          headers: {
+            ...authHeaders(),
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            database,
+            primaryKey,
+            data: changedData,
+          }),
+        }
+      );
+
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.error || 'Failed to update row');
+      }
+
+      // Refresh data
+      await fetchData();
+      handleCancelEdit();
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDelete = async (row: Record<string, unknown>) => {
+    if (!activeProject) return;
+
+    const primaryKey = getPrimaryKey(row);
+    setActionLoading(true);
+
+    try {
+      const res = await fetch(
+        `/api/projects/${activeProject.id}/db/tables/${encodeURIComponent(table)}/data`,
+        {
+          method: 'DELETE',
+          headers: {
+            ...authHeaders(),
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            database,
+            primaryKey,
+          }),
+        }
+      );
+
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.error || 'Failed to delete row');
+      }
+
+      // Refresh data
+      await fetchData();
+      setDeleteConfirm(null);
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const totalPages = data?.totalCount ? Math.ceil(data.totalCount / pageSize) : 1;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="card w-full max-w-6xl mx-4 max-h-[90vh] overflow-hidden flex flex-col">
+        {/* Header */}
+        <div className="p-4 border-b border-[var(--border)] flex justify-between items-center flex-shrink-0">
+          <div>
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              <Database className="w-5 h-5" />
+              {table}
+            </h2>
+            <p className="text-sm text-[var(--muted)]">Database: {database}</p>
+          </div>
+          <button onClick={onClose} className="btn btn-secondary p-2">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Search Bar */}
+        <div className="p-4 border-b border-[var(--border)] flex-shrink-0">
+          <div className="flex gap-4">
+            <div className="flex-1 relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--muted)]" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(0);
+                }}
+                placeholder="Search text columns..."
+                className="input w-full pl-9"
+              />
+            </div>
+            <button
+              onClick={fetchData}
+              className="btn btn-secondary flex items-center gap-2"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-auto p-4">
+          {loading && !data ? (
+            <div className="text-center py-8 text-[var(--muted)]">Loading data...</div>
+          ) : error ? (
+            <div className="text-center py-8">
+              <p className="text-[var(--danger)] mb-4">{error}</p>
+              <button onClick={fetchData} className="btn btn-secondary">
+                Try Again
+              </button>
+            </div>
+          ) : data?.rows.length === 0 ? (
+            <div className="text-center py-8 text-[var(--muted)]">
+              <p>No data found</p>
+              {search && <p className="text-sm mt-1">Try a different search term</p>}
+            </div>
+          ) : data ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--border)]">
+                    <th className="px-3 py-2 text-left font-medium text-[var(--muted)] sticky left-0 bg-[var(--card)]">
+                      Actions
+                    </th>
+                    {data.fields.map((field) => (
+                      <th key={field} className="px-3 py-2 text-left font-medium text-[var(--muted)]">
+                        <span className="flex items-center gap-1">
+                          {field}
+                          {primaryKeyColumns.some(c => c.name === field) && (
+                            <span title="Primary Key">
+                              <Key className="w-3 h-3 text-[var(--primary)]" />
+                            </span>
+                          )}
+                        </span>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.rows.map((row, idx) => (
+                    <tr key={idx} className="border-b border-[var(--border)] hover:bg-[var(--background)]">
+                      <td className="px-3 py-2 sticky left-0 bg-[var(--card)]">
+                        {editingRow === idx ? (
+                          <div className="flex gap-1">
+                            <button
+                              onClick={handleSaveEdit}
+                              disabled={actionLoading}
+                              className="btn btn-primary text-xs p-1"
+                              title="Save changes"
+                            >
+                              <Save className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={handleCancelEdit}
+                              disabled={actionLoading}
+                              className="btn btn-secondary text-xs p-1"
+                              title="Cancel"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex gap-1">
+                            <button
+                              onClick={() => handleEdit(idx, row)}
+                              className="btn btn-secondary text-xs p-1"
+                              title="Edit row"
+                            >
+                              <Edit className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={() => setDeleteConfirm(row)}
+                              className="btn btn-danger text-xs p-1"
+                              title="Delete row"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                      {data.fields.map((field) => (
+                        <td key={field} className="px-3 py-2 font-mono text-xs">
+                          {editingRow === idx ? (
+                            <input
+                              type="text"
+                              value={editedData[field] === null ? '' : String(editedData[field] ?? '')}
+                              onChange={(e) => setEditedData({ ...editedData, [field]: e.target.value || null })}
+                              className="input text-xs py-1 px-2 w-full min-w-[100px]"
+                              placeholder={row[field] === null ? 'NULL' : ''}
+                            />
+                          ) : row[field] === null ? (
+                            <span className="text-[var(--muted)] italic">NULL</span>
+                          ) : typeof row[field] === 'object' ? (
+                            JSON.stringify(row[field])
+                          ) : (
+                            String(row[field])
+                          )}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
+
+        {/* Footer with pagination */}
+        <div className="p-4 border-t border-[var(--border)] flex justify-between items-center flex-shrink-0">
+          <div className="text-sm text-[var(--muted)]">
+            {data && (
+              <>
+                Showing {page * pageSize + 1} - {Math.min((page + 1) * pageSize, data.totalCount || data.rowCount)} of {data.totalCount || data.rowCount} rows
+                {data.executionTimeMs && ` • ${data.executionTimeMs}ms`}
+              </>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={page === 0 || loading}
+              className="btn btn-secondary p-2"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="text-sm">
+              Page {page + 1} of {totalPages}
+            </span>
+            <button
+              onClick={() => setPage(p => p + 1)}
+              disabled={page >= totalPages - 1 || loading}
+              className="btn btn-secondary p-2"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-60">
+          <div className="card w-full max-w-md mx-4">
+            <div className="p-6 border-b border-[var(--border)]">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-[var(--danger)]" />
+                Delete Row
+              </h2>
+            </div>
+            <div className="p-6 space-y-4">
+              <p>Are you sure you want to delete this row? This cannot be undone.</p>
+              <div className="text-xs font-mono bg-[var(--background)] p-3 rounded overflow-auto max-h-40">
+                {Object.entries(deleteConfirm).map(([key, val]) => (
+                  <div key={key}>
+                    <span className="text-[var(--muted)]">{key}:</span>{' '}
+                    {val === null ? <span className="italic">NULL</span> : String(val)}
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-end gap-3 pt-4">
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  disabled={actionLoading}
+                  className="btn btn-secondary"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleDelete(deleteConfirm)}
+                  disabled={actionLoading}
+                  className="btn btn-danger"
+                >
+                  {actionLoading ? 'Deleting...' : 'Delete'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
