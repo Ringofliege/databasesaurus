@@ -279,6 +279,9 @@ function CreateProjectModal({
     setError(null);
 
     try {
+      // Prepend 'peakwork/' to the repo path
+      const fullRepoPath = gitlabRepoPath ? `peakwork/${gitlabRepoPath}` : undefined;
+
       const res = await fetch('/api/projects', {
         method: 'POST',
         headers: {
@@ -288,7 +291,7 @@ function CreateProjectModal({
         body: JSON.stringify({
           name,
           slug,
-          gitlabRepoPath: gitlabRepoPath || undefined,
+          gitlabRepoPath: fullRepoPath,
           defaultBranch: defaultBranch || undefined,
           workingDirectory: workingDirectory || undefined,
           pnpmFilter: pnpmFilter || undefined,
@@ -352,9 +355,12 @@ function CreateProjectModal({
                 value={gitlabRepoPath}
                 onChange={(e) => setGitlabRepoPath(e.target.value)}
                 className="input flex-1"
-                placeholder="my-repo"
+                placeholder="app/misc/database-helper"
               />
             </div>
+            <p className="text-xs text-[var(--muted)] mt-1">
+              Enter only the repository path after peakwork/ (e.g., group/project-name)
+            </p>
           </div>
 
           <div>

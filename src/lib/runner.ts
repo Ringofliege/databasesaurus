@@ -46,18 +46,122 @@ function isCommandAllowed(command: string, args: string[]): boolean {
 
 /**
  * Set up SSH key for GitLab access.
+ * 
+ * Supports three formats:
+ * 1. GIT_SSH_PRIVATE_KEY_B64: base64-encoded key (recommended for environment variables)
+ * 2. GIT_SSH_PRIVATE_KEY: raw key with newlines preserved
+ * 3. ~/.ssh/id_ed25519 or ~/.ssh/id_rsa: system SSH keys (used automatically if no env vars)
  */
 function setupSshKey(): string | null {
-  const sshKey = process.env.GIT_SSH_PRIVATE_KEY;
-  if (!sshKey) return null;
+  let sshKey = process.env.GIT_SSH_PRIVATE_KEY;
+  let isBase64 = false;
+  
+  // If raw key not provided, try base64-encoded version
+  if (!sshKey && process.env.GIT_SSH_PRIVATE_KEY_B64) {
+    try {
+      isBase64 = true;
+      console.log(`[runner] Decoding base64-encoded SSH key from GIT_SSH_PRIVATE_KEY_B64`);
+      const b64Key = process.env.GIT_SSH_PRIVATE_KEY_B64.trim();
+      console.log(`[runner] Base64 key length: ${b64Key.length} chars`);
+      sshKey = Buffer.from(b64Key, 'base64').toString('utf-8');
+      console.log(`[runner] Decoded key length: ${sshKey.length} chars`);
+    } catch (err) {
+      console.error(`[runner] Failed to decode base64 SSH key:`, err);
+      sshKey = null;
+    }
+  }
+  
+  if (!sshKey) {
+    console.log(`[runner] No GIT_SSH_PRIVATE_KEY or GIT_SSH_PRIVATE_KEY_B64 environment variable set, will use system SSH keys`);
+    return null;
+  }
   
   try {
+    // Trim and normalize the key
+    let formattedKey = sshKey.trim();
+    
+    // Validate key format BEFORE any modifications
+    if (!formattedKey.includes('BEGIN') || !formattedKey.includes('END')) {
+      console.error(`[runner] SSH key does not appear to be in valid format (missing BEGIN/END markers)`);
+      console.error(`[runner] Key starts with: ${formattedKey.substring(0, 50)}`);
+      console.error(`[runner] Key ends with: ${formattedKey.substring(Math.max(0, formattedKey.length - 50))}`);
+      return null;
+    }
+    
+    // If it came from base64, it should already have proper line endings
+    // Only fix escaped newlines if it came from raw env var
+    if (!isBase64) {
+      formattedKey = formattedKey.replace(/\\n/g, '\n');
+    }
+    
+    // Ensure it ends with a newline
+    if (!formattedKey.endsWith('\n')) {
+      formattedKey += '\n';
+    }
+    
     const keyPath = path.join(os.tmpdir(), `ssh_key_${Date.now()}`);
-    fs.writeFileSync(keyPath, sshKey, { mode: 0o600 });
-    console.log(`[runner] SSH key created at: ${keyPath}`);
+    fs.writeFileSync(keyPath, formattedKey, { mode: 0o600 });
+    
+    // Verify file was created and is readable
+    if (!fs.existsSync(keyPath)) {
+      throw new Error(`Failed to create SSH key file at ${keyPath}`);
+    }
+    
+    const stats = fs.statSync(keyPath);
+    console.log(`[runner] SSH key created at: ${keyPath} (${stats.size} bytes, mode: ${stats.mode.toString(8)})`);
+    
+    // Verify the key content is valid
+    const keyContent = fs.readFileSync(keyPath, 'utf-8');
+    if (!keyContent.includes('BEGIN') || !keyContent.includes('END')) {
+      console.error(`[runner] SSH key file verification failed - missing markers after write`);
+      throw new Error(`SSH key file does not contain valid markers`);
+    }
+    
+    // Log key type for debugging
+    if (keyContent.includes('OPENSSH PRIVATE KEY')) {
+      console.log(`[runner] SSH key type: OpenSSH format`);
+    } else if (keyContent.includes('RSA PRIVATE KEY')) {
+      console.log(`[runner] SSH key type: RSA format`);
+    } else if (keyContent.includes('ED25519 PRIVATE KEY')) {
+      console.log(`[runner] SSH key type: ED25519 format`);
+    }
+    
     return keyPath;
   } catch (err) {
     console.error(`[runner] Failed to set up SSH key:`, err);
+    return null;
+  }
+}
+
+/**
+ * Set up SSH config to avoid known_hosts issues.
+ */
+function setupSshConfig(): string | null {
+  try {
+    const sshDir = path.join(os.homedir(), '.ssh');
+    
+    // Ensure .ssh directory exists
+    if (!fs.existsSync(sshDir)) {
+      fs.mkdirSync(sshDir, { mode: 0o700 });
+    }
+    
+    // Create config file with strict host key checking disabled for gitlab
+    const configPath = path.join(sshDir, 'config');
+    const configContent = `Host gitlab.com
+  StrictHostKeyChecking accept-new
+  UserKnownHostsFile=/dev/null
+  User git
+`;
+    
+    // Append config if it doesn't exist, or update if needed
+    if (!fs.existsSync(configPath)) {
+      fs.writeFileSync(configPath, configContent, { mode: 0o600 });
+      console.log(`[runner] SSH config created at: ${configPath}`);
+    }
+    
+    return configPath;
+  } catch (err) {
+    console.error(`[runner] Failed to set up SSH config:`, err);
     return null;
   }
 }
@@ -110,19 +214,33 @@ export class CommandRunner extends EventEmitter {
     // Set up SSH if needed
     let sshKeyPath: string | null = null;
     if (command === 'git' && (args.includes('clone') || args.includes('fetch'))) {
-      sshKeyPath = setupSshKey();
-      if (sshKeyPath) {
-        // Use SSH with options to prevent passphrase prompts
-        // -o BatchMode=yes prevents interactive prompts
-        // -o ConnectTimeout=10 sets a timeout
-        env.GIT_SSH_COMMAND = `ssh -i ${sshKeyPath} -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10`;
-        console.log(`[runner] SSH setup: using provided key from GIT_SSH_PRIVATE_KEY`);
+      // Only set up SSH if HTTPS token is not available
+      if (!process.env.GITLAB_TOKEN) {
+        // Set up SSH config first
+        setupSshConfig();
+        
+        sshKeyPath = setupSshKey();
+        if (sshKeyPath) {
+          // Use SSH with minimal options for debugging
+          // -v: verbose (goes to stderr)
+          // -i: specify identity file  
+          // -o BatchMode=yes: prevent interactive prompts
+          // -o ConnectTimeout=10: timeout after 10s
+          env.GIT_SSH_COMMAND = `ssh -v -i ${sshKeyPath} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10`;
+          env.GIT_TRACE = '1';
+          console.log(`[runner] SSH setup: using provided key from GIT_SSH_PRIVATE_KEY_B64`);
+        } else {
+          // If no SSH key provided, try to use SSH agent and disable passphrase prompts
+          env.SSH_ASKPASS = '/bin/echo';
+          env.SSH_ASKPASS_REQUIRE = 'never';
+          env.GIT_SSH_COMMAND = 'ssh -v -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10';
+          env.GIT_TRACE = '1';
+          console.log(`[runner] SSH setup: no SSH key provided, using system SSH keys`);
+        }
       } else {
-        // If no SSH key provided, try to use SSH agent and disable passphrase prompts
-        env.SSH_ASKPASS = '/bin/echo';
-        env.SSH_ASKPASS_REQUIRE = 'never';
-        env.GIT_SSH_COMMAND = 'ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10';
-        console.log(`[runner] SSH setup: no GIT_SSH_PRIVATE_KEY provided, using system SSH with BatchMode enabled`);
+        // Using HTTPS token authentication - no SSH setup needed
+        env.GIT_TRACE = '1';
+        console.log(`[runner] Using HTTPS token authentication - SSH not needed`);
       }
     }
     
@@ -286,6 +404,30 @@ export class CommandRunner extends EventEmitter {
 
 /**
  * Clone or refresh a GitLab repository.
+ * 
+ * SSH Key Setup Options (in priority order):
+ * 
+ * 1. RECOMMENDED: GIT_SSH_PRIVATE_KEY_B64 (base64-encoded, no newlines)
+ *    - Best for environment variables and Docker
+ *    - Avoid newline encoding issues
+ *    - Generate with: cat ~/.ssh/gitlab_deploy_key | base64 -w0
+ * 
+ * 2. GIT_SSH_PRIVATE_KEY (raw key with newlines preserved)
+ *    - May have issues with shell environment variables
+ *    - Ensure newlines are preserved when setting
+ * 
+ * 3. Docker Volume Mount (best for containerized deployments)
+ *    - Mount key at /home/nextjs/.ssh/id_ed25519 or /home/nextjs/.ssh/id_rsa
+ *    - Will be used automatically if no environment variables set
+ * 
+ * The key MUST be passphrase-less (generated with -N "")
+ * 
+ * Example Docker setup:
+ *   docker run -e GIT_SSH_PRIVATE_KEY_B64="$(cat ~/.ssh/gitlab_deploy_key | base64 -w0)" ...
+ * 
+ * Or with docker-compose:
+ *   volumes:
+ *     - ~/.ssh/gitlab_deploy_key:/home/nextjs/.ssh/id_ed25519:ro
  */
 export async function cloneOrRefreshRepo(
   projectId: string,
@@ -307,8 +449,40 @@ export async function cloneOrRefreshRepo(
   const workspacePath = getWorkspacePath(projectSlug, repoPath, branch);
   console.log(`[cloneOrRefreshRepo] Workspace path: ${workspacePath}`);
   
-  const repoUrl = `git@gitlab.com:${repoPath}.git`;
-  console.log(`[cloneOrRefreshRepo] Repository URL: ${repoUrl}`);
+  // Determine authentication method
+  let repoUrl: string;
+  let authMethod: 'ssh' | 'https' = 'ssh';
+  
+  if (process.env.GITLAB_TOKEN) {
+    // Use HTTPS with token (recommended for reliability)
+    const token = process.env.GITLAB_TOKEN.trim();
+    if (!token) {
+      console.warn(`[cloneOrRefreshRepo] GITLAB_TOKEN is empty after trimming, will fall back to SSH`);
+    } else {
+      repoUrl = `https://oauth2:${token}@gitlab.com/${repoPath}.git`;
+      authMethod = 'https';
+      console.log(`[cloneOrRefreshRepo] Using HTTPS authentication with GitLab token (length: ${token.length})`);
+    }
+  } 
+  
+  if (authMethod === 'ssh' && process.env.GITLAB_USERNAME && process.env.GITLAB_TOKEN) {
+    // Alternative HTTPS format with username (fallback if first GITLAB_TOKEN check didn't work)
+    const username = process.env.GITLAB_USERNAME.trim();
+    const token = process.env.GITLAB_TOKEN.trim();
+    if (token) {
+      repoUrl = `https://${username}:${token}@gitlab.com/${repoPath}.git`;
+      authMethod = 'https';
+      console.log(`[cloneOrRefreshRepo] Using HTTPS authentication with GitLab username and token`);
+    }
+  }
+  
+  if (authMethod === 'ssh') {
+    // Use SSH (requires SSH key setup)
+    repoUrl = `git@gitlab.com:${repoPath}.git`;
+    console.log(`[cloneOrRefreshRepo] Using SSH authentication (requires GIT_SSH_PRIVATE_KEY_B64 or SSH key)`);
+  }
+  
+  console.log(`[cloneOrRefreshRepo] Repository URL: ${repoUrl.replace(/:[^@]*@/, ':****@')} (auth method: ${authMethod})`);
   
   const runner = new CommandRunner();
   
@@ -366,7 +540,25 @@ export async function cloneOrRefreshRepo(
   console.log(`[cloneOrRefreshRepo] Git operation result:`, result);
   if (!result.success) {
     console.error(`[cloneOrRefreshRepo] Git operation failed:`, result);
-    throw new Error(`Git operation failed with exit code ${result.exitCode}`);
+    
+    // Fetch logs from database for better error reporting
+    try {
+      const runLogs = await prisma.runLog.findMany({
+        where: { runId: result.runId },
+        orderBy: { ts: 'asc' },
+        select: { line: true },
+      });
+      
+      const logMessages = runLogs.map(log => log.line).join('\n');
+      console.error(`[cloneOrRefreshRepo] Git logs:\n${logMessages}`);
+      
+      throw new Error(`Git operation failed with exit code ${result.exitCode}:\n${logMessages}`);
+    } catch (err) {
+      if (err instanceof Error) {
+        throw err;
+      }
+      throw new Error(`Git operation failed with exit code ${result.exitCode}`);
+    }
   }
   
   return { workspacePath, runId: result.runId };

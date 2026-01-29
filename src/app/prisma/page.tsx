@@ -148,22 +148,33 @@ export default function PrismaPage() {
         },
       });
 
+      const data = await res.json();
+
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || `Failed to run ${label}`);
+        // Handle error responses
+        const errorMsg = data.error || data.message || `Failed to run ${label}`;
+        throw new Error(errorMsg);
       }
 
-      const data = await res.json();
-      
       // Handle clone/refresh response specially
-      if (endpoint === 'clone' && data.validation) {
+      if (endpoint === 'clone') {
         setCloneResponse(data);
-        setCurrentRun({
-          runId: data.runId || '',
-          status: data.success ? 'success' : 'failed',
-          exitCode: 0,
-          logs: [],
-        });
+        if (data.success) {
+          setCurrentRun({
+            runId: data.runId || '',
+            status: 'success',
+            exitCode: 0,
+            logs: [],
+          });
+        } else {
+          setCurrentRun({
+            runId: data.runId || '',
+            status: 'failed',
+            exitCode: 1,
+            logs: [],
+          });
+          setError(data.message || data.error);
+        }
       } else if (data.runId) {
         // Stream logs for other commands
         await streamLogs(data.runId);

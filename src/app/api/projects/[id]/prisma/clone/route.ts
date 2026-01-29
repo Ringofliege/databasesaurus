@@ -136,9 +136,16 @@ export async function POST(
       );
     }
 
-    console.error('Error cloning repository:', error);
+    const errorMessage = (error as Error).message;
+    console.error('Error cloning repository:', errorMessage);
+    
     return NextResponse.json(
-      { error: `Failed to clone repository: ${(error as Error).message}` },
+      { 
+        success: false,
+        error: `Failed to clone repository: ${errorMessage}`,
+        message: `Clone failed: ${errorMessage}`,
+        validation: null,
+      },
       { status: 500 }
     );
   }
