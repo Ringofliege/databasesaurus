@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { prisma } from './prisma';
 import { maskDbUrl } from './db-url';
-import { getWorkspacePath, ensureWorkspacesRoot, resolveWorkingDirectory, isValidRepoPath, isValidBranchName } from './path-utils';
+import { getWorkspacePath, ensureWorkspacesRoot, resolveWorkingDirectory, isValidRepoPath, isValidBranchName, findPrismaSchemaDir } from './path-utils';
 
 const MAX_LOG_LINES = 10000;
 
@@ -257,6 +257,7 @@ export class CommandRunner extends EventEmitter {
  * Clone or refresh a GitLab repository.
  */
 export async function cloneOrRefreshRepo(
+  projectId: string,
   projectSlug: string,
   repoPath: string,
   branch: string,
@@ -284,7 +285,7 @@ export async function cloneOrRefreshRepo(
   if (repoExists && refresh) {
     // Refresh existing repo
     result = await runner.run('git', ['fetch', 'origin'], {
-      projectId: projectSlug, // Will be replaced with actual project ID
+      projectId,
       kind: 'git.fetch',
       cwd: workspacePath,
     });
@@ -292,7 +293,7 @@ export async function cloneOrRefreshRepo(
     if (result.success) {
       const resetRunner = new CommandRunner();
       result = await resetRunner.run('git', ['reset', '--hard', `origin/${branch}`], {
-        projectId: projectSlug,
+        projectId,
         kind: 'git.reset',
         cwd: workspacePath,
       });
@@ -303,7 +304,7 @@ export async function cloneOrRefreshRepo(
     fs.mkdirSync(path.dirname(workspacePath), { recursive: true });
     
     result = await runner.run('git', ['clone', '-b', branch, repoUrl, workspacePath], {
-      projectId: projectSlug,
+      projectId,
       kind: 'git.clone',
     });
   } else {
@@ -329,12 +330,29 @@ export async function runPrismaCommand(
   databaseUrl: string,
   pnpmFilter?: string
 ): Promise<RunResult> {
-  const cwd = resolveWorkingDirectory(workspacePath, workingDirectory);
+  let cwd: string;
+  let schemaDir: string | null = null;
   
-  // Check for Prisma schema
-  const schemaPath = path.join(cwd, 'prisma', 'schema.prisma');
-  if (!fs.existsSync(schemaPath)) {
-    throw new Error(`Prisma schema not found at ${path.join(workingDirectory || '', 'prisma', 'schema.prisma')}`);
+  if (workingDirectory) {
+    // If working directory is explicitly set, use it
+    cwd = resolveWorkingDirectory(workspacePath, workingDirectory);
+    // Check for Prisma schema in the explicit directory
+    const schemaPath = path.join(cwd, 'prisma', 'schema.prisma');
+    if (!fs.existsSync(schemaPath)) {
+      throw new Error(`Prisma schema not found at ${path.join(workingDirectory, 'prisma', 'schema.prisma')}`);
+    }
+  } else {
+    // Auto-detect Prisma schema location
+    schemaDir = findPrismaSchemaDir(workspacePath);
+    if (!schemaDir) {
+      throw new Error('Prisma schema not found. Please set a working directory or ensure schema.prisma exists in the repository.');
+    }
+    // The working directory should be the parent of the prisma folder
+    cwd = path.dirname(schemaDir);
+    // If prisma folder is at root, use the workspace root
+    if (cwd === workspacePath || !cwd.startsWith(workspacePath)) {
+      cwd = workspacePath;
+    }
   }
   
   const runner = new CommandRunner();

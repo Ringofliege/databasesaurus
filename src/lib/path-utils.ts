@@ -130,3 +130,74 @@ export function generateSlug(name: string): string {
     .replace(/^-+|-+$/g, '')
     .substring(0, 50);
 }
+
+/**
+ * Find Prisma schema file in a workspace.
+ * Searches common locations for schema.prisma files.
+ * Returns the directory containing the schema, or null if not found.
+ */
+export function findPrismaSchemaDir(workspacePath: string, maxDepth = 5): string | null {
+  const searchPaths = [
+    // Common locations first
+    'prisma',
+    'db/prisma',
+    'database/prisma',
+    'src/prisma',
+    'packages/db/prisma',
+    'packages/database/prisma',
+  ];
+
+  // Check common locations first
+  for (const searchPath of searchPaths) {
+    const schemaPath = path.join(workspacePath, searchPath, 'schema.prisma');
+    if (fs.existsSync(schemaPath)) {
+      return path.join(workspacePath, searchPath);
+    }
+  }
+
+  // Fallback: recursively search for schema.prisma
+  function searchDir(dir: string, depth: number): string | null {
+    if (depth > maxDepth) return null;
+
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      
+      // First check if schema.prisma exists in this directory
+      const hasSchema = entries.some(e => e.isFile() && e.name === 'schema.prisma');
+      if (hasSchema) {
+        return dir;
+      }
+
+      // Then recurse into subdirectories (skip node_modules, .git, etc.)
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const dirName = entry.name;
+          if (dirName === 'node_modules' || dirName === '.git' || dirName === 'dist' || dirName === 'build' || dirName.startsWith('.')) {
+            continue;
+          }
+          const found = searchDir(path.join(dir, dirName), depth + 1);
+          if (found) return found;
+        }
+      }
+    } catch {
+      // Ignore permission errors, etc.
+    }
+
+    return null;
+  }
+
+  return searchDir(workspacePath, 0);
+}
+
+/**
+ * Get the relative path of the Prisma schema directory from the workspace root.
+ */
+export function getPrismaSchemaRelativePath(workspacePath: string): string | null {
+  const schemaDir = findPrismaSchemaDir(workspacePath);
+  if (!schemaDir) return null;
+  
+  const relativePath = path.relative(workspacePath, schemaDir);
+  // Return the parent directory (e.g., 'packages/db' instead of 'packages/db/prisma')
+  const parentDir = path.dirname(relativePath);
+  return parentDir === '.' ? '' : parentDir;
+}

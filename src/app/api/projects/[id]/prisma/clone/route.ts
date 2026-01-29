@@ -58,6 +58,7 @@ export async function POST(
 
     // Clone or refresh
     const result = await cloneOrRefreshRepo(
+      project.id,
       project.slug,
       project.gitlabRepoPath,
       branch,

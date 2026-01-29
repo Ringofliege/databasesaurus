@@ -112,12 +112,74 @@ export class InMemorySessionStore implements SessionStore {
 export class RedisSessionStore implements SessionStore {
   private redis: Redis;
   private prefix = 'dbhelper:session:';
+  private isConnected = false;
+  private connectionError: Error | null = null;
 
   constructor(redisUrl: string) {
-    this.redis = new Redis(redisUrl);
+    this.redis = new Redis(redisUrl, {
+      maxRetriesPerRequest: 3,
+      retryStrategy: (times) => {
+        if (times > 3) {
+          // Stop retrying after 3 attempts
+          return null;
+        }
+        return Math.min(times * 200, 1000);
+      },
+      lazyConnect: true,
+    });
+
+    this.redis.on('connect', () => {
+      this.isConnected = true;
+      this.connectionError = null;
+      console.log('Redis session store connected');
+    });
+
+    this.redis.on('error', (err) => {
+      this.connectionError = err;
+      console.error('Redis session store error:', err.message);
+    });
+
+    this.redis.on('close', () => {
+      this.isConnected = false;
+    });
+  }
+
+  private async ensureConnection(): Promise<void> {
+    if (this.redis.status === 'ready') {
+      return;
+    }
+
+    if (this.redis.status === 'connecting') {
+      // Wait for connection
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Redis connection timeout'));
+        }, 5000);
+
+        this.redis.once('ready', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+
+        this.redis.once('error', (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+      });
+      return;
+    }
+
+    try {
+      await this.redis.connect();
+    } catch (err) {
+      this.connectionError = err as Error;
+      throw new Error(`Failed to connect to Redis: ${(err as Error).message}`);
+    }
   }
 
   async create(projectId: string, dbUrl: ParsedDbUrl, actor: string): Promise<{ sessionId: string; expiresAt: Date }> {
+    await this.ensureConnection();
+
     // Delete existing session for this project
     await this.deleteByProjectId(projectId);
 
@@ -147,6 +209,8 @@ export class RedisSessionStore implements SessionStore {
   }
 
   async get(sessionId: string): Promise<SessionData | null> {
+    await this.ensureConnection();
+
     const data = await this.redis.get(`${this.prefix}${sessionId}`);
     if (!data) return null;
 
@@ -162,12 +226,16 @@ export class RedisSessionStore implements SessionStore {
   }
 
   async getByProjectId(projectId: string): Promise<SessionData | null> {
+    await this.ensureConnection();
+
     const sessionId = await this.redis.get(`${this.prefix}project:${projectId}`);
     if (!sessionId) return null;
     return this.get(sessionId);
   }
 
   async delete(sessionId: string): Promise<void> {
+    await this.ensureConnection();
+
     const session = await this.get(sessionId);
     if (session) {
       await this.redis.del(`${this.prefix}project:${session.projectId}`);
@@ -176,6 +244,8 @@ export class RedisSessionStore implements SessionStore {
   }
 
   async deleteByProjectId(projectId: string): Promise<void> {
+    await this.ensureConnection();
+
     const sessionId = await this.redis.get(`${this.prefix}project:${projectId}`);
     if (sessionId) {
       await this.redis.del(`${this.prefix}${sessionId}`);
@@ -185,6 +255,10 @@ export class RedisSessionStore implements SessionStore {
 
   async close(): Promise<void> {
     await this.redis.quit();
+  }
+
+  getConnectionError(): Error | null {
+    return this.connectionError;
   }
 }
 
