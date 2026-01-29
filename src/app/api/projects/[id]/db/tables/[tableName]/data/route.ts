@@ -166,8 +166,11 @@ export async function PUT(
     const client = createDbClient(session.dbUrl);
     
     try {
+      console.log('[updateRow] Starting update for table:', tableName, 'database:', database);
+      console.log('[updateRow] primaryKey:', primaryKey, 'data:', data);
       await client.connect();
       await client.updateRow(database, tableName, primaryKey, data);
+      console.log('[updateRow] Update completed successfully');
       
       // Log audit
       await logAudit(id, auth.actor, 'table.update_row', true, {
@@ -259,8 +262,11 @@ export async function DELETE(
     const client = createDbClient(session.dbUrl);
     
     try {
+      console.log('[deleteRow] Starting delete for table:', tableName, 'database:', database);
+      console.log('[deleteRow] primaryKey:', primaryKey);
       await client.connect();
       await client.deleteRow(database, tableName, primaryKey);
+      console.log('[deleteRow] Delete completed successfully');
       
       // Log audit
       await logAudit(id, auth.actor, 'table.delete_row', true, {

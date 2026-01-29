@@ -51,9 +51,15 @@ function setupSshKey(): string | null {
   const sshKey = process.env.GIT_SSH_PRIVATE_KEY;
   if (!sshKey) return null;
   
-  const keyPath = path.join(os.tmpdir(), `ssh_key_${Date.now()}`);
-  fs.writeFileSync(keyPath, sshKey, { mode: 0o600 });
-  return keyPath;
+  try {
+    const keyPath = path.join(os.tmpdir(), `ssh_key_${Date.now()}`);
+    fs.writeFileSync(keyPath, sshKey, { mode: 0o600 });
+    console.log(`[runner] SSH key created at: ${keyPath}`);
+    return keyPath;
+  } catch (err) {
+    console.error(`[runner] Failed to set up SSH key:`, err);
+    return null;
+  }
 }
 
 /**
@@ -103,20 +109,45 @@ export class CommandRunner extends EventEmitter {
     
     // Set up SSH if needed
     let sshKeyPath: string | null = null;
-    if (command === 'git' && args.includes('clone') || args.includes('fetch')) {
+    if (command === 'git' && (args.includes('clone') || args.includes('fetch'))) {
       sshKeyPath = setupSshKey();
       if (sshKeyPath) {
-        env.GIT_SSH_COMMAND = `ssh -i ${sshKeyPath} -o StrictHostKeyChecking=accept-new`;
+        // Use SSH with options to prevent passphrase prompts
+        // -o BatchMode=yes prevents interactive prompts
+        // -o ConnectTimeout=10 sets a timeout
+        env.GIT_SSH_COMMAND = `ssh -i ${sshKeyPath} -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10`;
+        console.log(`[runner] SSH setup: using provided key from GIT_SSH_PRIVATE_KEY`);
+      } else {
+        // If no SSH key provided, try to use SSH agent and disable passphrase prompts
+        env.SSH_ASKPASS = '/bin/echo';
+        env.SSH_ASKPASS_REQUIRE = 'never';
+        env.GIT_SSH_COMMAND = 'ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10';
+        console.log(`[runner] SSH setup: no GIT_SSH_PRIVATE_KEY provided, using system SSH with BatchMode enabled`);
       }
     }
     
     return new Promise((resolve, reject) => {
       try {
+        // Use ignore for stdin to prevent interactive prompts
         this.process = spawn(command, args, {
           cwd: options.cwd,
           env,
-          stdio: ['pipe', 'pipe', 'pipe'],
+          stdio: ['ignore', 'pipe', 'pipe'],
         });
+        
+        // Set a timeout to prevent hanging (especially for git clone with SSH passphrase prompts)
+        // Git operations should complete within 5 minutes
+        const timeoutDuration = command === 'git' ? 300000 : 600000; // 5 min for git, 10 min for others
+        const timeout = setTimeout(() => {
+          if (this.process && !this.process.killed) {
+            console.error(`[runner] Process timeout after ${timeoutDuration}ms. Killing process.`);
+            this.addLogLine(`⚠️ Process timeout - killed after ${timeoutDuration}ms. This usually means the process was waiting for input (e.g., SSH passphrase). Make sure GIT_SSH_PRIVATE_KEY is set to a passphrase-less key.`);
+            this.process.kill('SIGKILL');
+          }
+        }, timeoutDuration);
+        
+        // Clear timeout on process exit
+        this.process.on('exit', () => clearTimeout(timeout));
         
         // Start log flushing
         this.startLogFlushing();
@@ -270,20 +301,26 @@ export async function cloneOrRefreshRepo(
     throw new Error('Invalid branch name');
   }
   
+  console.log(`[cloneOrRefreshRepo] Ensuring workspaces root...`);
   ensureWorkspacesRoot();
   
   const workspacePath = getWorkspacePath(projectSlug, repoPath, branch);
+  console.log(`[cloneOrRefreshRepo] Workspace path: ${workspacePath}`);
+  
   const repoUrl = `git@gitlab.com:${repoPath}.git`;
+  console.log(`[cloneOrRefreshRepo] Repository URL: ${repoUrl}`);
   
   const runner = new CommandRunner();
   
   // Check if repo already exists
   const repoExists = fs.existsSync(path.join(workspacePath, '.git'));
+  console.log(`[cloneOrRefreshRepo] Repo exists: ${repoExists}`);
   
   let result: RunResult;
   
   if (repoExists && refresh) {
     // Refresh existing repo
+    console.log(`[cloneOrRefreshRepo] Refreshing existing repo...`);
     result = await runner.run('git', ['fetch', 'origin'], {
       projectId,
       kind: 'git.fetch',
@@ -292,6 +329,7 @@ export async function cloneOrRefreshRepo(
     
     if (result.success) {
       const resetRunner = new CommandRunner();
+      console.log(`[cloneOrRefreshRepo] Running git reset...`);
       result = await resetRunner.run('git', ['reset', '--hard', `origin/${branch}`], {
         projectId,
         kind: 'git.reset',
@@ -300,19 +338,34 @@ export async function cloneOrRefreshRepo(
     }
   } else if (!repoExists) {
     // Clone new repo
+    console.log(`[cloneOrRefreshRepo] Cloning new repo...`);
     // Ensure parent directory exists
-    fs.mkdirSync(path.dirname(workspacePath), { recursive: true });
+    try {
+      const parentDir = path.dirname(workspacePath);
+      console.log(`[cloneOrRefreshRepo] Creating parent directory: ${parentDir}`);
+      fs.mkdirSync(parentDir, { recursive: true, mode: 0o755 });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+        throw new Error(`Cannot create workspace directory: permission denied. Ensure /data/workspaces is writable.`);
+      }
+      throw err;
+    }
     
+    console.log(`[cloneOrRefreshRepo] Running git clone...`);
     result = await runner.run('git', ['clone', '-b', branch, repoUrl, workspacePath], {
       projectId,
       kind: 'git.clone',
     });
+    console.log(`[cloneOrRefreshRepo] Git clone result:`, result);
   } else {
     // Repo exists and no refresh requested
+    console.log(`[cloneOrRefreshRepo] Repo exists and no refresh requested`);
     return { workspacePath, runId: '' };
   }
   
+  console.log(`[cloneOrRefreshRepo] Git operation result:`, result);
   if (!result.success) {
+    console.error(`[cloneOrRefreshRepo] Git operation failed:`, result);
     throw new Error(`Git operation failed with exit code ${result.exitCode}`);
   }
   

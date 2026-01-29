@@ -78,7 +78,30 @@ export function getWorkspacePath(projectSlug: string, repoPath: string, branch: 
  */
 export function ensureWorkspacesRoot(): void {
   if (!fs.existsSync(WORKSPACES_ROOT)) {
-    fs.mkdirSync(WORKSPACES_ROOT, { recursive: true });
+    try {
+      fs.mkdirSync(WORKSPACES_ROOT, { recursive: true, mode: 0o755 });
+    } catch (err) {
+      // If permission denied, try to create with less restrictive permissions
+      if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+        console.error(`Failed to create ${WORKSPACES_ROOT}. Please ensure the directory is writable.`);
+        throw new Error(`Cannot create workspace directory at ${WORKSPACES_ROOT}: permission denied`);
+      }
+      throw err;
+    }
+  } else {
+    // Directory exists, ensure it's writable
+    try {
+      // Test if we can write to the directory
+      const testFile = path.join(WORKSPACES_ROOT, '.write-test-' + Date.now());
+      fs.writeFileSync(testFile, '');
+      fs.unlinkSync(testFile);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+        console.error(`${WORKSPACES_ROOT} is not writable`);
+        throw new Error(`Workspace directory is not writable: ${WORKSPACES_ROOT}`);
+      }
+      throw err;
+    }
   }
 }
 
