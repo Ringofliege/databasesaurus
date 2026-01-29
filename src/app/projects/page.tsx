@@ -335,7 +335,7 @@ function CreateProjectModal({
               value={slug}
               onChange={(e) => setSlug(e.target.value)}
               className="input w-full font-mono"
-              pattern="^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$"
+              pattern="^[a-z0-9][a-z0-9\-]*[a-z0-9]$|^[a-z0-9]$"
               required
             />
             <p className="text-xs text-[var(--muted)] mt-1">

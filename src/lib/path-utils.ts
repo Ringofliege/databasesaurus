@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 
-const WORKSPACES_ROOT = '/data/workspaces';
+const WORKSPACES_ROOT = process.env.WORKSPACES_ROOT || '/data/workspaces';
 
 /**
  * Validate that a path doesn't contain traversal attempts.
@@ -117,7 +117,7 @@ export function isValidBranchName(branch: string): boolean {
  * Validate slug format.
  */
 export function isValidSlug(slug: string): boolean {
-  return /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(slug);
+  return /^[a-z0-9][a-z0-9\-]*[a-z0-9]$|^[a-z0-9]$/.test(slug);
 }
 
 /**

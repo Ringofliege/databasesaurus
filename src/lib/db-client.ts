@@ -568,12 +568,12 @@ export class PostgresClient implements DbClient {
       throw new Error('Invalid username. Use only alphanumeric characters and underscores.');
     }
     // PostgreSQL CREATE USER doesn't support parameterized queries for PASSWORD
-    // Use format() function which properly handles escaping via %L for literals
-    await this.pool!.query(`SELECT format('CREATE USER %I WITH PASSWORD %L', $1, $2)`, [username, password])
-      .then(async (res) => {
-        const sql = res.rows[0].format;
-        await this.pool!.query(sql);
-      });
+    // Use format() function which properly handles escaping via %I (identifier) and %L (literal)
+    const result = await this.pool!.query(
+      `SELECT format('CREATE USER %I WITH PASSWORD %L', $1::text, $2::text) AS sql`,
+      [username, password]
+    );
+    await this.pool!.query(result.rows[0].sql);
   }
   
   async rotatePassword(username: string, newPassword: string): Promise<void> {
@@ -582,12 +582,12 @@ export class PostgresClient implements DbClient {
       throw new Error('Invalid username.');
     }
     // PostgreSQL ALTER USER doesn't support parameterized queries for PASSWORD
-    // Use format() function which properly handles escaping via %L for literals
-    await this.pool!.query(`SELECT format('ALTER USER %I WITH PASSWORD %L', $1, $2)`, [username, newPassword])
-      .then(async (res) => {
-        const sql = res.rows[0].format;
-        await this.pool!.query(sql);
-      });
+    // Use format() function which properly handles escaping via %I (identifier) and %L (literal)
+    const result = await this.pool!.query(
+      `SELECT format('ALTER USER %I WITH PASSWORD %L', $1::text, $2::text) AS sql`,
+      [username, newPassword]
+    );
+    await this.pool!.query(result.rows[0].sql);
   }
   
   previewGrantSql(database: string, username: string): string[] {

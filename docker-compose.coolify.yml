@@ -1,69 +1,47 @@
-# Example Docker Compose configuration for Coolify deployment
-# This demonstrates how to use a custom port (3010) instead of the default 3000
-
-version: "3.8"
-
 services:
   app:
-    # Use the published image from GitHub Container Registry
-    image: ghcr.io/ringofliege/databasesaurus:latest
-    # Or build locally:
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
-
+    image: 'registry.gitlab.com/peakwork/app/misc/database-helper:latest'
+    expose:
+      - '3000'
     environment:
-      # Network configuration
-      HOSTNAME: "0.0.0.0"
-      PORT: "3010"  # Custom port - healthcheck will automatically use this
-
-      # Database connection (required)
-      DATABASE_URL: ${DATABASE_URL}
-
-      # Authentication (required)
-      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-admin}
-      BASIC_AUTH_PASS: ${BASIC_AUTH_PASS:-changeme}
-
-      # Optional: GitLab SSH key for repository cloning
-      GIT_SSH_PRIVATE_KEY: ${GIT_SSH_PRIVATE_KEY:-}
-
-      # Redis connection (optional, uses internal redis service)
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-
-    # Expose the custom port
-    ports:
-      - "3010:3010"
-
+      PORT: 3000
+      HOST: 0.0.0.0
+      DATABASE_URL: '${DATABASE_URL}'
+      BASIC_AUTH_USER: '${BASIC_AUTH_USER:-admin}'
+      BASIC_AUTH_PASS: '${BASIC_AUTH_PASS:-changeme}'
+      GIT_SSH_PRIVATE_KEY: '${GIT_SSH_PRIVATE_KEY:-}'
+      REDIS_URL: '${REDIS_URL:-}'
     volumes:
-      - workspaces:/data/workspaces
-
+      - 'workspaces:/data/workspaces'
     depends_on:
       - redis
-
-    restart: unless-stopped
-
-    # Health check automatically uses PORT environment variable
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3010/api/projects"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
+      test:
+        - CMD-SHELL
+        - 'wget -qO- http://0.0.0.0:3000/ >/dev/null 2>&1 || exit 1'
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
   redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
-    expose:
-      - "6379"
+    image: 'redis:7-alpine'
+    command:
+      - redis-server
+      - '--appendonly'
+      - 'yes'
     volumes:
-      - redis_data:/data
-    restart: unless-stopped
+      - 'redis_data:/data'
+    expose:
+      - '6379'
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD
+        - redis-cli
+        - ping
       interval: 10s
       timeout: 5s
       retries: 3
-
+    restart: unless-stopped
 volumes:
-  workspaces:
-  redis_data:
+  workspaces: null
+  redis_data: null

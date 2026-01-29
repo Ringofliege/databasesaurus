@@ -79,14 +79,32 @@ cp .env.example .env
 
 ### 3. Set up Meta-DB
 
+Choose one of the following methods to initialize your database schema.
+
+#### Method 1: `db push` (for rapid prototyping)
+
+This command syncs your schema with the database without creating migration files. It's ideal for initial setup or development environments where you don't need a migration history.
+
 ```bash
 # Generate Prisma client
 pnpm prisma generate
 
-# Push schema to database (development)
+# Push the schema to the database
 pnpm db:push
+```
 
-# Or run migrations (production)
+#### Method 2: `migrate` (for development and production)
+
+This workflow creates migration files, allowing you to version your schema changes and apply them consistently across different environments.
+
+```bash
+# Create your first migration and apply it
+pnpm db:migrate:dev --name init
+
+# For subsequent changes during development
+pnpm db:migrate:dev
+
+# To apply migrations in production
 pnpm db:migrate
 ```
 
